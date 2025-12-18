@@ -1,0 +1,20 @@
+[project]
+name = "math500-eval"
+version = "0.1.0"
+description = "Evaluate Qwen3-14B and Nemotron-Nano-12B-v2 on MATH-500 dataset"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "vllm>=0.6.0",
+    "datasets>=2.0.0",
+    "torch>=2.0.0",
+    "transformers>=4.40.0",
+    "accelerate>=0.30.0",
+    "tqdm>=4.60.0",
+    "sympy>=1.12",
+    "antlr4-python3-runtime==4.11.*",
+]
+
+[tool.uv]
+# Only resolve for Linux with CUDA
+environments = ["sys_platform == 'linux'"]

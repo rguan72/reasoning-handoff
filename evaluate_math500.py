@@ -1,0 +1,352 @@
+"""
+Evaluate Qwen3-14B and NVIDIA-Nemotron-Nano-12B-v2 on MATH-500 dataset.
+Finds problems that are solved correctly 25%-75% of the time.
+
+Requirements:
+- CUDA-capable GPU with sufficient memory (models are ~14B and ~12B parameters)
+- vllm library for efficient inference
+- HuggingFace datasets library
+
+Memory Optimization:
+- Uses FP16 (float16) quantization by default to reduce memory usage by ~50%
+- Can use AWQ or GPTQ quantization for ~75% memory reduction (if quantized models available)
+- GPU memory utilization set to 85% to prevent OOM errors
+- Context length limited to 8192 tokens
+
+Usage:
+    python evaluate_math500.py
+
+Output:
+    Creates math500_evaluation_results.json with problems that have 25%-75% accuracy
+    for at least one of the models.
+"""
+
+import json
+import re
+from typing import Dict, List
+from pathlib import Path
+
+from datasets import load_dataset
+from vllm import LLM, SamplingParams
+from tqdm import tqdm
+import sympy
+from sympy import sympify, simplify, N
+
+
+def extract_answer(text: str) -> str:
+    """
+    Extract the final answer from model output.
+    Looks for boxed answers or final numerical/expression answers.
+    """
+    # Try to find boxed answer first (common in MATH dataset format)
+    boxed_patterns = [
+        r'\\boxed\{([^}]+)\}',
+        r'\\boxed{([^}]+)}',
+        r'\boxed\{([^}]+)\}',
+        r'\boxed{([^}]+)}',
+    ]
+    
+    for pattern in boxed_patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    
+    # If no boxed answer, try to find the last line or expression
+    lines = text.strip().split('\n')
+    for line in reversed(lines):
+        line = line.strip()
+        if line and not line.startswith('#'):
+            # Remove common prefixes
+            for prefix in ['Answer:', 'answer:', 'The answer is', 'Therefore']:
+                if line.lower().startswith(prefix.lower()):
+                    line = line[len(prefix):].strip()
+                    if line.startswith(':'):
+                        line = line[1:].strip()
+                    return line
+            return line
+    
+    return text.strip()
+
+
+def normalize_answer(answer: str) -> str:
+    """
+    Normalize answer for comparison.
+    Removes extra whitespace and normalizes LaTeX formatting.
+    """
+    # Remove extra whitespace
+    answer = ' '.join(answer.split())
+    
+    # Normalize common LaTeX patterns
+    answer = answer.replace('\\left(', '(').replace('\\right)', ')')
+    answer = answer.replace('\\left[', '[').replace('\\right]', ']')
+    answer = answer.replace('\\left{', '{').replace('\\right}', '}')
+    
+    return answer.strip()
+
+
+def compare_answers(predicted: str, ground_truth: str) -> bool:
+    """
+    Compare predicted answer with ground truth answer.
+    Handles both exact match and symbolic equality.
+    """
+    # Normalize both answers
+    pred_norm = normalize_answer(predicted)
+    gt_norm = normalize_answer(ground_truth)
+    
+    # Try exact match first
+    if pred_norm == gt_norm:
+        return True
+    
+    # Try symbolic comparison for mathematical expressions
+    try:
+        # Remove text wrappers like \text{}
+        pred_clean = re.sub(r'\\text\{([^}]+)\}', r'\1', pred_norm)
+        gt_clean = re.sub(r'\\text\{([^}]+)\}', r'\1', gt_norm)
+        
+        # Try to parse as symbolic expressions
+        pred_expr = sympify(pred_clean, evaluate=False)
+        gt_expr = sympify(gt_clean, evaluate=False)
+        
+        # Check if they're equal
+        if simplify(pred_expr - gt_expr) == 0:
+            return True
+        
+        # Try numerical comparison if both are numbers
+        pred_num = N(pred_expr)
+        gt_num = N(gt_expr)
+        if abs(float(pred_num) - float(gt_num)) < 1e-6:
+            return True
+    except:
+        pass
+    
+    # Try string similarity (for text answers)
+    if pred_norm.lower() == gt_norm.lower():
+        return True
+    
+    # Check if ground truth is contained in predicted (for verbose answers)
+    if gt_norm in pred_norm or pred_norm in gt_norm:
+        return True
+    
+    return False
+
+
+def evaluate_model(
+    model: LLM,
+    sampling_params: SamplingParams,
+    problems: List[Dict],
+    model_name: str,
+    num_runs: int = 10
+) -> Dict[str, List[bool]]:
+    """
+    Evaluate a model on all problems, running each problem num_runs times.
+    
+    Returns a dictionary mapping problem_id to list of correctness results.
+    """
+    results = {}
+    
+    # Prepare prompts
+    prompts = []
+    problem_ids = []
+    
+    for item in problems:
+        problem_text = item['problem']
+        prompt = f"Solve the following math problem step by step.\n\nProblem: {problem_text}\n\nSolution:"
+        
+        # Add each problem num_runs times
+        for _ in range(num_runs):
+            prompts.append(prompt)
+            problem_ids.append(item['unique_id'])
+    
+    # Run inference in batches
+    print(f"\nRunning inference for {model_name}...")
+    outputs = model.generate(prompts, sampling_params)
+    
+    # Process results
+    current_idx = 0
+    for item in tqdm(problems, desc=f"Processing {model_name}"):
+        problem_id = item['unique_id']
+        ground_truth = item['answer']
+        
+        correctness_list = []
+        for _ in range(num_runs):
+            output = outputs[current_idx]
+            generated_text = output.outputs[0].text
+            extracted_answer = extract_answer(generated_text)
+            is_correct = compare_answers(extracted_answer, ground_truth)
+            correctness_list.append(is_correct)
+            current_idx += 1
+        
+        results[problem_id] = correctness_list
+    
+    return results
+
+
+def main():
+    """Main evaluation function."""
+    print("Loading MATH-500 dataset...")
+    dataset = load_dataset("HuggingFaceH4/MATH-500", split="test")
+    problems = list(dataset)
+    
+    print(f"Loaded {len(problems)} problems")
+    
+    # Model configurations
+    # Note: Model paths may need to be adjusted based on actual HuggingFace model names
+    # Common alternatives:
+    # - Qwen3-14B: "Qwen/Qwen3-14B-Base" or "Qwen/Qwen3-14B"
+    # - Nemotron: "nvidia/NVIDIA-Nemotron-Nano-12B-v2" or "nvidia/Nemotron-Nano-12B-v2"
+    # Quantization options:
+    # - dtype: "float16" (half precision, ~2x memory reduction) or "bfloat16"
+    # - quantization: "awq" or "gptq" (if quantized models available, ~4x memory reduction)
+    # - gpu_memory_utilization: 0.0-1.0 (fraction of GPU memory to use)
+    models_config = {
+        "Qwen3-14B": {
+            "model_path": "Qwen/Qwen3-14B",
+            "max_tokens": 2048,
+            "temperature": 0.7,
+            "dtype": "float16",  # Use half precision to reduce memory
+            "quantization": None,  # Set to "awq" or "gptq" if quantized model available
+            "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
+            "max_model_len": 8192,  # Limit context length to save memory
+        },
+        "NVIDIA-Nemotron-Nano-12B-v2": {
+            "model_path": "nvidia/Nemotron-Nano-12B-v2",
+            "max_tokens": 2048,
+            "temperature": 0.7,
+            "dtype": "float16",  # Use half precision to reduce memory
+            "quantization": None,  # Set to "awq" or "gptq" if quantized model available
+            "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
+            "max_model_len": 8192,  # Limit context length to save memory
+        }
+    }
+    
+    all_results = {}
+    num_runs = 1
+    
+    # Evaluate each model
+    for model_name, config in models_config.items():
+        print(f"\n{'='*60}")
+        print(f"Evaluating {model_name}")
+        print(f"{'='*60}")
+        
+        try:
+            # Initialize model with quantization settings
+            print(f"Loading model: {config['model_path']}")
+            print(f"  Quantization: {config.get('quantization', 'None (using dtype={})'.format(config.get('dtype', 'auto')))}")
+            print(f"  GPU memory utilization: {config.get('gpu_memory_utilization', 0.9)}")
+            
+            # Build LLM arguments
+            llm_kwargs = {
+                "model": config['model_path'],
+                "trust_remote_code": True,
+                "tensor_parallel_size": 1,  # Adjust based on available GPUs
+                "seed": 42,
+                "dtype": config.get('dtype', 'auto'),
+                "gpu_memory_utilization": config.get('gpu_memory_utilization', 0.9),
+                "max_model_len": config.get('max_model_len', None),
+            }
+            
+            # Add quantization if specified
+            if config.get('quantization'):
+                llm_kwargs["quantization"] = config['quantization']
+            
+            # Remove None values
+            llm_kwargs = {k: v for k, v in llm_kwargs.items() if v is not None}
+            
+            llm = LLM(**llm_kwargs)
+            
+            # Set up sampling parameters
+            sampling_params = SamplingParams(
+                temperature=config['temperature'],
+                max_tokens=config['max_tokens'],
+                top_p=0.95,
+                seed=42,
+            )
+            
+            # Evaluate model
+            results = evaluate_model(llm, sampling_params, problems[:2], model_name, num_runs)
+            all_results[model_name] = results
+            
+            # Clean up
+            del llm
+            
+        except Exception as e:
+            print(f"Error evaluating {model_name}: {e}")
+            print(f"Skipping {model_name}...")
+            continue
+    
+    # Find problems with 25%-75% accuracy
+    print(f"\n{'='*60}")
+    print("Analyzing results...")
+    print(f"{'='*60}")
+    
+    filtered_problems = []
+    
+    for problem in problems:
+        problem_id = problem['unique_id']
+        problem_data = {
+            'unique_id': problem_id,
+            'problem': problem['problem'],
+            'answer': problem['answer'],
+            'subject': problem.get('subject', 'Unknown'),
+            'level': problem.get('level', 'Unknown'),
+            'model_results': {}
+        }
+        
+        include_problem = False
+        
+        for model_name, results in all_results.items():
+            if problem_id in results:
+                correctness_list = results[problem_id]
+                accuracy = sum(correctness_list) / len(correctness_list)
+                problem_data['model_results'][model_name] = {
+                    'accuracy': accuracy,
+                    'correct_count': sum(correctness_list),
+                    'total_runs': len(correctness_list),
+                    'correctness_list': correctness_list
+                }
+                
+                # Check if accuracy is in 25%-75% range
+                if 0.25 <= accuracy <= 0.75:
+                    include_problem = True
+        
+        if include_problem:
+            filtered_problems.append(problem_data)
+    
+    # Save results
+    output_file = Path("math500_evaluation_results.json")
+    print(f"\nSaving results to {output_file}...")
+    
+    output_data = {
+        'summary': {
+            'total_problems': len(problems),
+            'problems_in_range': len(filtered_problems),
+            'models_evaluated': list(all_results.keys()),
+            'runs_per_problem': num_runs,
+        },
+        'problems': filtered_problems
+    }
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n{'='*60}")
+    print("Evaluation Complete!")
+    print(f"{'='*60}")
+    print(f"Total problems evaluated: {len(problems)}")
+    print(f"Problems with 25%-75% accuracy: {len(filtered_problems)}")
+    print(f"Results saved to: {output_file}")
+    
+    # Print summary statistics
+    for model_name in all_results.keys():
+        print(f"\n{model_name}:")
+        model_problems_in_range = sum(
+            1 for p in filtered_problems
+            if model_name in p['model_results'] and 
+            0.25 <= p['model_results'][model_name]['accuracy'] <= 0.75
+        )
+        print(f"  Problems in 25%-75% range: {model_problems_in_range}")
+
+
+if __name__ == "__main__":
+    main()
+

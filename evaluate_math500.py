@@ -14,13 +14,24 @@ Memory Optimization:
 - Context length limited to 8192 tokens
 
 Usage:
-    python evaluate_math500.py
+    python evaluate_math500.py [options]
+
+Options:
+    --model {nvidia,qwen,both}  Which model(s) to evaluate (default: both)
+    --debug-log FILE            Output file for debug log (default: math500_debug_log.jsonl)
+    --output FILE               Output file for evaluation results (default: math500_evaluation_results.json)
+
+Examples:
+    python evaluate_math500.py --model nvidia --output nvidia_results.json --debug-log nvidia_debug.jsonl
+    python evaluate_math500.py --model qwen
+    python evaluate_math500.py --model both
 
 Output:
-    Creates math500_evaluation_results.json with problems that have 25%-75% accuracy
+    Creates evaluation results JSON with problems that have 25%-75% accuracy
     for at least one of the models.
 """
 
+import argparse
 import json
 import re
 from typing import Dict, List
@@ -28,6 +39,7 @@ from pathlib import Path
 
 from datasets import load_dataset
 from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
 from tqdm import tqdm
 import sympy
 from sympy import sympify, simplify, N
@@ -174,28 +186,41 @@ def evaluate_model(
     problems: List[Dict],
     model_name: str,
     num_runs: int = 10,
-    debug_log_file: str = None
+    debug_log_file: str = None,
+    tokenizer = None,
+    use_chat_template: bool = False,
+    system_prompt: str = None
 ) -> Dict[str, List[bool]]:
     """
     Evaluate a model on all problems, running each problem num_runs times.
-    
+
     Returns a dictionary mapping problem_id to list of correctness results.
     """
     results = {}
-    
+
     # Open debug log file if specified
     debug_log = None
     if debug_log_file:
         debug_log = open(debug_log_file, 'a', encoding='utf-8')
-    
+
     # Prepare prompts
     prompts = []
     problem_ids = []
-    
+
     for item in problems:
         problem_text = item['problem']
-        prompt = f"Solve the following math problem step by step.\n\nProblem: {problem_text}\n\nSolution:"
-        
+        user_content = f"Solve the following math problem step by step.\n\nProblem: {problem_text}"
+
+        if use_chat_template and tokenizer is not None:
+            # Use chat template for models that require it (e.g., Nemotron)
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": user_content})
+            prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            prompt = f"{user_content}\n\nSolution:"
+
         # Add each problem num_runs times
         for _ in range(num_runs):
             prompts.append(prompt)
@@ -246,8 +271,36 @@ def evaluate_model(
     return results
 
 
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Evaluate models on MATH-500 dataset"
+    )
+    parser.add_argument(
+        "--model",
+        choices=["nvidia", "qwen", "both"],
+        default="both",
+        help="Which model(s) to evaluate: 'nvidia', 'qwen', or 'both' (default: both)"
+    )
+    parser.add_argument(
+        "--debug-log",
+        type=str,
+        default="math500_debug_log.jsonl",
+        help="Output file for debug log (default: math500_debug_log.jsonl)"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="math500_evaluation_results.json",
+        help="Output file for evaluation results (default: math500_evaluation_results.json)"
+    )
+    return parser.parse_args()
+
+
 def main():
     """Main evaluation function."""
+    args = parse_args()
+
     print("Loading MATH-500 dataset...")
     dataset = load_dataset("HuggingFaceH4/MATH-500", split="test")
     problems = list(dataset)
@@ -263,7 +316,7 @@ def main():
     # - dtype: "float16" (half precision, ~2x memory reduction) or "bfloat16"
     # - quantization: "awq" or "gptq" (if quantized models available, ~4x memory reduction)
     # - gpu_memory_utilization: 0.0-1.0 (fraction of GPU memory to use)
-    models_config = {
+    all_models_config = {
         "Qwen3-14B": {
             "model_path": "Qwen/Qwen3-14B",
             "max_tokens": 4096,
@@ -273,22 +326,34 @@ def main():
             "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
             "max_model_len": 8192,  # Limit context length to save memory
         },
-        # "NVIDIA-Nemotron-Nano-12B-v2": {
-        #     "model_path": "nvidia/NVIDIA-Nemotron-Nano-12B-v2",
-        #     "max_tokens": 4096,
-        #     "temperature": 0.7,
-        #     "dtype": "float16",  # Use half precision to reduce memory
-        #     "quantization": None,  # Set to "awq" or "gptq" if quantized model available
-        #     "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
-        #     "max_model_len": 8192,  # Limit context length to save memory
-        # }
+        "NVIDIA-Nemotron-Nano-12B-v2": {
+            "model_path": "nvidia/NVIDIA-Nemotron-Nano-12B-v2",
+            "max_tokens": 4096,
+            "temperature": 0.7,
+            "dtype": "float16",  # Use half precision to reduce memory
+            "quantization": None,  # Set to "awq" or "gptq" if quantized model available
+            "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
+            "max_model_len": 8192,  # Limit context length to save memory
+            "use_chat_template": True,  # Nemotron requires chat template
+            "system_prompt": "/think",  # Enable reasoning mode
+        }
     }
+
+    # Filter models based on CLI argument
+    if args.model == "nvidia":
+        models_config = {"NVIDIA-Nemotron-Nano-12B-v2": all_models_config["NVIDIA-Nemotron-Nano-12B-v2"]}
+    elif args.model == "qwen":
+        models_config = {"Qwen3-14B": all_models_config["Qwen3-14B"]}
+    else:
+        models_config = all_models_config
+
+    print(f"Models to evaluate: {list(models_config.keys())}")
     
     all_results = {}
     num_runs = 10
     
     # Set up debug log file for transcripts and extracted answers
-    debug_log_file = Path("math500_debug_log.jsonl")
+    debug_log_file = Path(args.debug_log)
     # Clear/create the debug log file
     if debug_log_file.exists():
         debug_log_file.unlink()
@@ -325,7 +390,14 @@ def main():
             llm_kwargs = {k: v for k, v in llm_kwargs.items() if v is not None}
             
             llm = LLM(**llm_kwargs)
-            
+
+            # Load tokenizer if chat template is needed
+            tokenizer = None
+            use_chat_template = config.get('use_chat_template', False)
+            if use_chat_template:
+                print(f"Loading tokenizer for chat template...")
+                tokenizer = AutoTokenizer.from_pretrained(config['model_path'], trust_remote_code=True)
+
             # Set up sampling parameters
             # Note: seed is not set to allow different reasoning trajectories for each run
             sampling_params = SamplingParams(
@@ -333,13 +405,20 @@ def main():
                 max_tokens=config['max_tokens'],
                 top_p=0.95,
             )
-            
+
             # Evaluate model
-            results = evaluate_model(llm, sampling_params, problems, model_name, num_runs, str(debug_log_file))
+            results = evaluate_model(
+                llm, sampling_params, problems, model_name, num_runs, str(debug_log_file),
+                tokenizer=tokenizer,
+                use_chat_template=use_chat_template,
+                system_prompt=config.get('system_prompt')
+            )
             all_results[model_name] = results
-            
+
             # Clean up
             del llm
+            if tokenizer is not None:
+                del tokenizer
             
         except Exception as e:
             print(f"Error evaluating {model_name}: {e}")
@@ -400,7 +479,7 @@ def main():
             problems_in_range.append(problem_data)
     
     # Save results
-    output_file = Path("math500_evaluation_results.json")
+    output_file = Path(args.output)
     print(f"\nSaving results to {output_file}...")
     
     output_data = {

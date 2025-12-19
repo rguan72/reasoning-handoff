@@ -50,7 +50,14 @@ def extract_answer(text: str) -> str:
     """
     Extract the final answer from model output.
     Looks for boxed answers or final numerical/expression answers.
+    Handles Nemotron's <think>...</think> reasoning format.
     """
+    # For Nemotron models, the answer comes after </think> tag
+    # Extract content after </think> if present
+    think_end = text.rfind('</think>')
+    if think_end != -1:
+        text = text[think_end + len('</think>'):]
+
     # Helper function to extract content with balanced braces
     def extract_balanced_braces(text: str, start_pos: int) -> str:
         """Extract content from opening brace at start_pos, handling nested braces."""
@@ -241,7 +248,7 @@ def evaluate_model(
 
     for item in problems:
         problem_text = item['problem']
-        user_content = f"Solve the following math problem step by step.\n\nProblem: {problem_text}"
+        user_content = f"Solve the following math problem step by step. Put your final answer inside \\boxed{{}}.\n\nProblem: {problem_text}"
 
         if use_chat_template and tokenizer is not None:
             # Use chat template for models that require it (e.g., Nemotron)
@@ -258,9 +265,25 @@ def evaluate_model(
             prompts.append(prompt)
             problem_ids.append(item['unique_id'])
     
+    # Debug: print first prompt to verify format
+    if prompts:
+        print(f"\n--- Sample prompt (first problem) ---")
+        print(prompts[0][:500] + "..." if len(prompts[0]) > 500 else prompts[0])
+        print("--- End sample prompt ---\n")
+
     # Run inference in batches
     print(f"\nRunning inference for {model_name}...")
     outputs = model.generate(prompts, sampling_params)
+
+    # Debug: check first output
+    if outputs:
+        first_output = outputs[0].outputs[0]
+        print(f"\n--- Sample output (first problem) ---")
+        print(f"Generated text length: {len(first_output.text)}")
+        print(f"Finish reason: {first_output.finish_reason}")
+        sample_text = first_output.text[:500] if len(first_output.text) > 500 else first_output.text
+        print(f"Text preview: {repr(sample_text)}")
+        print("--- End sample output ---\n")
     
     # Process results
     current_idx = 0
@@ -371,12 +394,13 @@ def main():
         },
         "NVIDIA-Nemotron-Nano-12B-v2": {
             "model_path": "nvidia/NVIDIA-Nemotron-Nano-12B-v2",
-            "max_tokens": 4096,
-            "temperature": 0.7,
+            "max_tokens": 8192,  # Increased for reasoning mode (recommended 1024+)
+            "temperature": 0.6,  # Recommended temperature for reasoning mode
+            "top_p": 0.95,  # Recommended top_p for reasoning mode
             "dtype": "float16",  # Use half precision to reduce memory
             "quantization": None,  # Set to "awq" or "gptq" if quantized model available
             "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
-            "max_model_len": 8192,  # Limit context length to save memory
+            "max_model_len": 16384,  # Increased for long reasoning traces
             "use_chat_template": True,  # Nemotron requires chat template
             "system_prompt": "/think",  # Enable reasoning mode
         }
@@ -443,11 +467,15 @@ def main():
 
             # Set up sampling parameters
             # Note: seed is not set to allow different reasoning trajectories for each run
-            sampling_params = SamplingParams(
-                temperature=config['temperature'],
-                max_tokens=config['max_tokens'],
-                top_p=0.95,
-            )
+            sampling_kwargs = {
+                "temperature": config['temperature'],
+                "max_tokens": config['max_tokens'],
+                "top_p": config.get('top_p', 0.95),
+            }
+            # Add stop sequences if specified
+            if config.get('stop_sequences'):
+                sampling_kwargs["stop"] = config['stop_sequences']
+            sampling_params = SamplingParams(**sampling_kwargs)
 
             # Evaluate model
             results = evaluate_model(

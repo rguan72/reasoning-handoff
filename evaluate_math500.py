@@ -74,23 +74,19 @@ def extract_answer(text: str) -> str:
         return None
     
     # Try to find boxed answer first (common in MATH dataset format)
-    # Look for \boxed{ or \boxed\{ patterns
-    boxed_patterns = [
-        r'\\boxed\{',
-        r'\\boxed{',
-        r'\boxed\{',
-        r'\boxed{',
-    ]
-    
-    for pattern in boxed_patterns:
-        match = re.search(pattern, text)
-        if match:
-            # Find the position after the pattern
-            start_pos = match.end()
-            # Extract balanced braces content
-            content = extract_balanced_braces(text, start_pos - 1)
-            if content:
-                return content.strip()
+    # Look for the LAST \boxed{} in the text (final answer is usually at the end)
+    # Pattern handles optional space between \boxed and {
+    boxed_pattern = r'\\boxed\s*\{'
+
+    # Find all matches and use the last one
+    matches = list(re.finditer(boxed_pattern, text))
+    if matches:
+        match = matches[-1]  # Use the last \boxed{}
+        # Find the position of the opening brace
+        brace_pos = match.end() - 1
+        content = extract_balanced_braces(text, brace_pos)
+        if content:
+            return content.strip()
     
     # If no boxed answer, try to find the last line or expression
     lines = text.strip().split('\n')
@@ -114,14 +110,49 @@ def normalize_answer(answer: str) -> str:
     Normalize answer for comparison.
     Removes extra whitespace and normalizes LaTeX formatting.
     """
-    # Normalize common LaTeX patterns first (before whitespace normalization)
-    answer = answer.replace('\\left(', '(').replace('\\right)', ')')
-    answer = answer.replace('\\left[', '[').replace('\\right]', ']')
-    answer = answer.replace('\\left{', '{').replace('\\right}', '}')
-    
+    # Strip \boxed{} wrapper if present (as a fallback if extraction didn't remove it)
+    boxed_match = re.search(r'\\boxed\s*\{', answer)
+    if boxed_match:
+        # Find the content inside \boxed{}
+        start = boxed_match.end() - 1  # Position of the opening brace
+        depth = 0
+        for i in range(start, len(answer)):
+            if answer[i] == '{':
+                depth += 1
+            elif answer[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    answer = answer[start + 1:i]
+                    break
+
+    # Normalize delimiter sizing commands: \left, \right, \big, \Big, \bigg, \Bigg, etc.
+    # Handle with optional space between command and delimiter
+    answer = re.sub(r'\\left\s*\(', '(', answer)
+    answer = re.sub(r'\\right\s*\)', ')', answer)
+    answer = re.sub(r'\\left\s*\[', '[', answer)
+    answer = re.sub(r'\\right\s*\]', ']', answer)
+    answer = re.sub(r'\\left\s*\\{', '{', answer)
+    answer = re.sub(r'\\right\s*\\}', '}', answer)
+    answer = re.sub(r'\\left\s*\|', '|', answer)
+    answer = re.sub(r'\\right\s*\|', '|', answer)
+    # Also handle \bigl, \bigr, \Bigl, \Bigr, etc.
+    answer = re.sub(r'\\[Bb]ig[lr]?\s*\(', '(', answer)
+    answer = re.sub(r'\\[Bb]ig[lr]?\s*\)', ')', answer)
+    answer = re.sub(r'\\[Bb]ig[lr]?\s*\[', '[', answer)
+    answer = re.sub(r'\\[Bb]ig[lr]?\s*\]', ']', answer)
+
+    # Normalize fraction commands: \dfrac, \cfrac, \tfrac -> \frac (they're equivalent)
+    answer = re.sub(r'\\dfrac', r'\\frac', answer)
+    answer = re.sub(r'\\cfrac', r'\\frac', answer)
+    answer = re.sub(r'\\tfrac', r'\\frac', answer)
+
+    # Normalize LaTeX spacing commands: \  (non-breaking space), \, \; \: \! -> regular space or nothing
+    answer = re.sub(r'\\[,;:!]\s*', ' ', answer)  # thin/medium/thick space -> space
+    answer = re.sub(r'\\\s+', ' ', answer)  # \ followed by whitespace -> space
+
     # Remove extra whitespace
     answer = ' '.join(answer.split())
-    
+
     # Normalize spacing around parentheses, brackets, and commas
     # Remove spaces immediately after opening parentheses/brackets
     answer = re.sub(r'\(\s+', '(', answer)
@@ -131,7 +162,7 @@ def normalize_answer(answer: str) -> str:
     answer = re.sub(r'\s+\]', ']', answer)
     # Normalize spacing around commas (remove spaces before, keep one after)
     answer = re.sub(r'\s*,\s*', ', ', answer)
-    
+
     return answer.strip()
 
 

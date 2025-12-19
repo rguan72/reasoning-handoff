@@ -38,18 +38,46 @@ def extract_answer(text: str) -> str:
     Extract the final answer from model output.
     Looks for boxed answers or final numerical/expression answers.
     """
+    # Helper function to extract content with balanced braces
+    def extract_balanced_braces(text: str, start_pos: int) -> str:
+        """Extract content from opening brace at start_pos, handling nested braces."""
+        if start_pos >= len(text) or text[start_pos] != '{':
+            return None
+        
+        depth = 0
+        start = start_pos + 1  # Skip opening brace
+        i = start_pos
+        
+        while i < len(text):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    # Found matching closing brace
+                    return text[start:i]
+            i += 1
+        
+        return None
+    
     # Try to find boxed answer first (common in MATH dataset format)
+    # Look for \boxed{ or \boxed\{ patterns
     boxed_patterns = [
-        r'\\boxed\{([^}]+)\}',
-        r'\\boxed{([^}]+)}',
-        r'\boxed\{([^}]+)\}',
-        r'\boxed{([^}]+)}',
+        r'\\boxed\{',
+        r'\\boxed{',
+        r'\boxed\{',
+        r'\boxed{',
     ]
     
     for pattern in boxed_patterns:
         match = re.search(pattern, text)
         if match:
-            return match.group(1).strip()
+            # Find the position after the pattern
+            start_pos = match.end()
+            # Extract balanced braces content
+            content = extract_balanced_braces(text, start_pos - 1)
+            if content:
+                return content.strip()
     
     # If no boxed answer, try to find the last line or expression
     lines = text.strip().split('\n')
@@ -73,13 +101,23 @@ def normalize_answer(answer: str) -> str:
     Normalize answer for comparison.
     Removes extra whitespace and normalizes LaTeX formatting.
     """
-    # Remove extra whitespace
-    answer = ' '.join(answer.split())
-    
-    # Normalize common LaTeX patterns
+    # Normalize common LaTeX patterns first (before whitespace normalization)
     answer = answer.replace('\\left(', '(').replace('\\right)', ')')
     answer = answer.replace('\\left[', '[').replace('\\right]', ']')
     answer = answer.replace('\\left{', '{').replace('\\right}', '}')
+    
+    # Remove extra whitespace
+    answer = ' '.join(answer.split())
+    
+    # Normalize spacing around parentheses, brackets, and commas
+    # Remove spaces immediately after opening parentheses/brackets
+    answer = re.sub(r'\(\s+', '(', answer)
+    answer = re.sub(r'\[\s+', '[', answer)
+    # Remove spaces immediately before closing parentheses/brackets
+    answer = re.sub(r'\s+\)', ')', answer)
+    answer = re.sub(r'\s+\]', ']', answer)
+    # Normalize spacing around commas (remove spaces before, keep one after)
+    answer = re.sub(r'\s*,\s*', ', ', answer)
     
     return answer.strip()
 
@@ -135,7 +173,8 @@ def evaluate_model(
     sampling_params: SamplingParams,
     problems: List[Dict],
     model_name: str,
-    num_runs: int = 10
+    num_runs: int = 10,
+    debug_log_file: str = None
 ) -> Dict[str, List[bool]]:
     """
     Evaluate a model on all problems, running each problem num_runs times.
@@ -143,6 +182,11 @@ def evaluate_model(
     Returns a dictionary mapping problem_id to list of correctness results.
     """
     results = {}
+    
+    # Open debug log file if specified
+    debug_log = None
+    if debug_log_file:
+        debug_log = open(debug_log_file, 'a', encoding='utf-8')
     
     # Prepare prompts
     prompts = []
@@ -166,17 +210,38 @@ def evaluate_model(
     for item in tqdm(problems, desc=f"Processing {model_name}"):
         problem_id = item['unique_id']
         ground_truth = item['answer']
+        problem_text = item['problem']
         
         correctness_list = []
-        for _ in range(num_runs):
+        for run_idx in range(num_runs):
             output = outputs[current_idx]
             generated_text = output.outputs[0].text
             extracted_answer = extract_answer(generated_text)
             is_correct = compare_answers(extracted_answer, ground_truth)
             correctness_list.append(is_correct)
+            
+            # Log transcript and extracted answer for debugging
+            if debug_log:
+                log_entry = {
+                    'model_name': model_name,
+                    'problem_id': problem_id,
+                    'run_index': run_idx,
+                    'problem': problem_text,
+                    'ground_truth': ground_truth,
+                    'transcript': generated_text,
+                    'extracted_answer': extracted_answer,
+                    'is_correct': is_correct
+                }
+                debug_log.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+                debug_log.flush()
+            
             current_idx += 1
         
         results[problem_id] = correctness_list
+    
+    # Close debug log file
+    if debug_log:
+        debug_log.close()
     
     return results
 
@@ -201,26 +266,33 @@ def main():
     models_config = {
         "Qwen3-14B": {
             "model_path": "Qwen/Qwen3-14B",
-            "max_tokens": 2048,
+            "max_tokens": 4096,
             "temperature": 0.7,
             "dtype": "float16",  # Use half precision to reduce memory
             "quantization": None,  # Set to "awq" or "gptq" if quantized model available
             "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
             "max_model_len": 8192,  # Limit context length to save memory
         },
-        "NVIDIA-Nemotron-Nano-12B-v2": {
-            "model_path": "nvidia/NVIDIA-Nemotron-Nano-12B-v2",
-            "max_tokens": 2048,
-            "temperature": 0.7,
-            "dtype": "float16",  # Use half precision to reduce memory
-            "quantization": None,  # Set to "awq" or "gptq" if quantized model available
-            "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
-            "max_model_len": 8192,  # Limit context length to save memory
-        }
+        # "NVIDIA-Nemotron-Nano-12B-v2": {
+        #     "model_path": "nvidia/NVIDIA-Nemotron-Nano-12B-v2",
+        #     "max_tokens": 4096,
+        #     "temperature": 0.7,
+        #     "dtype": "float16",  # Use half precision to reduce memory
+        #     "quantization": None,  # Set to "awq" or "gptq" if quantized model available
+        #     "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
+        #     "max_model_len": 8192,  # Limit context length to save memory
+        # }
     }
     
     all_results = {}
-    num_runs = 1
+    num_runs = 10
+    
+    # Set up debug log file for transcripts and extracted answers
+    debug_log_file = Path("math500_debug_log.jsonl")
+    # Clear/create the debug log file
+    if debug_log_file.exists():
+        debug_log_file.unlink()
+    print(f"\nDebug logging enabled: transcripts and extracted answers will be saved to {debug_log_file}")
     
     # Evaluate each model
     for model_name, config in models_config.items():
@@ -255,15 +327,15 @@ def main():
             llm = LLM(**llm_kwargs)
             
             # Set up sampling parameters
+            # Note: seed is not set to allow different reasoning trajectories for each run
             sampling_params = SamplingParams(
                 temperature=config['temperature'],
                 max_tokens=config['max_tokens'],
                 top_p=0.95,
-                seed=42,
             )
             
             # Evaluate model
-            results = evaluate_model(llm, sampling_params, problems[:2], model_name, num_runs)
+            results = evaluate_model(llm, sampling_params, problems, model_name, num_runs, str(debug_log_file))
             all_results[model_name] = results
             
             # Clean up
@@ -352,6 +424,7 @@ def main():
     print(f"Problems evaluated: {len(all_evaluated_problems)}")
     print(f"Problems with 25%-75% accuracy: {len(problems_in_range)}")
     print(f"Results saved to: {output_file}")
+    print(f"Debug log saved to: {debug_log_file}")
     print(f"\nNote: All evaluated problems are saved (not just filtered ones).")
     print(f"      Use load_problems_in_range.py to filter by different accuracy ranges.")
     

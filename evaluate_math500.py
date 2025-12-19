@@ -209,7 +209,7 @@ def main():
             "max_model_len": 8192,  # Limit context length to save memory
         },
         "NVIDIA-Nemotron-Nano-12B-v2": {
-            "model_path": "nvidia/Nemotron-Nano-12B-v2",
+            "model_path": "nvidia/NVIDIA-Nemotron-Nano-12B-v2",
             "max_tokens": 2048,
             "temperature": 0.7,
             "dtype": "float16",  # Use half precision to reduce memory
@@ -274,15 +274,27 @@ def main():
             print(f"Skipping {model_name}...")
             continue
     
-    # Find problems with 25%-75% accuracy
+    # Process all evaluated problems and save results
     print(f"\n{'='*60}")
     print("Analyzing results...")
     print(f"{'='*60}")
     
-    filtered_problems = []
+    all_evaluated_problems = []
+    problems_in_range = []
     
-    for problem in problems:
-        problem_id = problem['unique_id']
+    # Get all problem IDs that were evaluated (may be subset if some models failed)
+    evaluated_problem_ids = set()
+    for results in all_results.values():
+        evaluated_problem_ids.update(results.keys())
+    
+    # Create a mapping of problem_id to problem data
+    problem_map = {p['unique_id']: p for p in problems}
+    
+    for problem_id in evaluated_problem_ids:
+        if problem_id not in problem_map:
+            continue
+            
+        problem = problem_map[problem_id]
         problem_data = {
             'unique_id': problem_id,
             'problem': problem['problem'],
@@ -292,7 +304,7 @@ def main():
             'model_results': {}
         }
         
-        include_problem = False
+        in_range = False
         
         for model_name, results in all_results.items():
             if problem_id in results:
@@ -307,10 +319,13 @@ def main():
                 
                 # Check if accuracy is in 25%-75% range
                 if 0.25 <= accuracy <= 0.75:
-                    include_problem = True
+                    in_range = True
         
-        if include_problem:
-            filtered_problems.append(problem_data)
+        # Save all evaluated problems (not just filtered ones)
+        # This allows load_problems_in_range.py to filter by any range
+        all_evaluated_problems.append(problem_data)
+        if in_range:
+            problems_in_range.append(problem_data)
     
     # Save results
     output_file = Path("math500_evaluation_results.json")
@@ -319,11 +334,12 @@ def main():
     output_data = {
         'summary': {
             'total_problems': len(problems),
-            'problems_in_range': len(filtered_problems),
+            'problems_evaluated': len(all_evaluated_problems),
+            'problems_in_range': len(problems_in_range),
             'models_evaluated': list(all_results.keys()),
             'runs_per_problem': num_runs,
         },
-        'problems': filtered_problems
+        'problems': all_evaluated_problems
     }
     
     with open(output_file, 'w', encoding='utf-8') as f:
@@ -332,18 +348,26 @@ def main():
     print(f"\n{'='*60}")
     print("Evaluation Complete!")
     print(f"{'='*60}")
-    print(f"Total problems evaluated: {len(problems)}")
-    print(f"Problems with 25%-75% accuracy: {len(filtered_problems)}")
+    print(f"Total problems in dataset: {len(problems)}")
+    print(f"Problems evaluated: {len(all_evaluated_problems)}")
+    print(f"Problems with 25%-75% accuracy: {len(problems_in_range)}")
     print(f"Results saved to: {output_file}")
+    print(f"\nNote: All evaluated problems are saved (not just filtered ones).")
+    print(f"      Use load_problems_in_range.py to filter by different accuracy ranges.")
     
     # Print summary statistics
     for model_name in all_results.keys():
         print(f"\n{model_name}:")
+        model_problems_evaluated = sum(
+            1 for p in all_evaluated_problems
+            if model_name in p['model_results']
+        )
         model_problems_in_range = sum(
-            1 for p in filtered_problems
+            1 for p in all_evaluated_problems
             if model_name in p['model_results'] and 
             0.25 <= p['model_results'][model_name]['accuracy'] <= 0.75
         )
+        print(f"  Problems evaluated: {model_problems_evaluated}")
         print(f"  Problems in 25%-75% range: {model_problems_in_range}")
 
 

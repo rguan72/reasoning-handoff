@@ -1,9 +1,64 @@
 {
   "summary": {
     "total_problems": 500,
+    "problems_evaluated": 2,
     "problems_in_range": 0,
-    "models_evaluated": [],
+    "models_evaluated": [
+      "Qwen3-14B",
+      "NVIDIA-Nemotron-Nano-12B-v2"
+    ],
     "runs_per_problem": 1
   },
-  "problems": []
+  "problems": [
+    {
+      "unique_id": "test/precalculus/807.json",
+      "problem": "Convert the point $(0,3)$ in rectangular coordinates to polar coordinates.  Enter your answer in the form $(r,\\theta),$ where $r > 0$ and $0 \\le \\theta < 2 \\pi.$",
+      "answer": "\\left( 3, \\frac{\\pi}{2} \\right)",
+      "subject": "Precalculus",
+      "level": 2,
+      "model_results": {
+        "Qwen3-14B": {
+          "accuracy": 0.0,
+          "correct_count": 0,
+          "total_runs": 1,
+          "correctness_list": [
+            false
+          ]
+        },
+        "NVIDIA-Nemotron-Nano-12B-v2": {
+          "accuracy": 0.0,
+          "correct_count": 0,
+          "total_runs": 1,
+          "correctness_list": [
+            false
+          ]
+        }
+      }
+    },
+    {
+      "unique_id": "test/intermediate_algebra/1994.json",
+      "problem": "Define\n\\[p = \\sum_{k = 1}^\\infty \\frac{1}{k^2} \\quad \\text{and} \\quad q = \\sum_{k = 1}^\\infty \\frac{1}{k^3}.\\]Find a way to write\n\\[\\sum_{j = 1}^\\infty \\sum_{k = 1}^\\infty \\frac{1}{(j + k)^3}\\]in terms of $p$ and $q.$",
+      "answer": "p - q",
+      "subject": "Intermediate Algebra",
+      "level": 5,
+      "model_results": {
+        "Qwen3-14B": {
+          "accuracy": 0.0,
+          "correct_count": 0,
+          "total_runs": 1,
+          "correctness_list": [
+            false
+          ]
+        },
+        "NVIDIA-Nemotron-Nano-12B-v2": {
+          "accuracy": 1.0,
+          "correct_count": 1,
+          "total_runs": 1,
+          "correctness_list": [
+            true
+          ]
+        }
+      }
+    }
+  ]
 }

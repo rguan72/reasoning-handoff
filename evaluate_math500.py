@@ -20,10 +20,11 @@ Options:
     --model {nvidia,qwen,both}  Which model(s) to evaluate (default: both)
     --debug-log FILE            Output file for debug log (default: math500_debug_log.jsonl)
     --output FILE               Output file for evaluation results (default: math500_evaluation_results.json)
+    --num-problems N            Number of problems to evaluate (default: all 500)
 
 Examples:
     python evaluate_math500.py --model nvidia --output nvidia_results.json --debug-log nvidia_debug.jsonl
-    python evaluate_math500.py --model qwen
+    python evaluate_math500.py --model qwen --num-problems 50
     python evaluate_math500.py --model both
 
 Output:
@@ -294,6 +295,12 @@ def parse_args():
         default="math500_evaluation_results.json",
         help="Output file for evaluation results (default: math500_evaluation_results.json)"
     )
+    parser.add_argument(
+        "--num-problems",
+        type=int,
+        default=None,
+        help="Number of problems to evaluate (default: all 500)"
+    )
     return parser.parse_args()
 
 
@@ -304,8 +311,13 @@ def main():
     print("Loading MATH-500 dataset...")
     dataset = load_dataset("HuggingFaceH4/MATH-500", split="test")
     problems = list(dataset)
-    
-    print(f"Loaded {len(problems)} problems")
+
+    # Limit number of problems if specified
+    if args.num_problems is not None:
+        problems = problems[:args.num_problems]
+        print(f"Evaluating {len(problems)} problems (limited from 500)")
+    else:
+        print(f"Loaded {len(problems)} problems")
     
     # Model configurations
     # Note: Model paths may need to be adjusted based on actual HuggingFace model names

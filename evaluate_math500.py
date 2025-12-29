@@ -45,6 +45,8 @@ from tqdm import tqdm
 import sympy
 from sympy import sympify, simplify, N
 
+from model_configs import get_all_models_config
+
 
 def extract_answer(text: str) -> str:
     """
@@ -373,38 +375,7 @@ def main():
     else:
         print(f"Loaded {len(problems)} problems")
     
-    # Model configurations
-    # Note: Model paths may need to be adjusted based on actual HuggingFace model names
-    # Common alternatives:
-    # - Qwen3-14B: "Qwen/Qwen3-14B-Base" or "Qwen/Qwen3-14B"
-    # - Nemotron: "nvidia/NVIDIA-Nemotron-Nano-12B-v2" or "nvidia/Nemotron-Nano-12B-v2"
-    # Quantization options:
-    # - dtype: "float16" (half precision, ~2x memory reduction) or "bfloat16"
-    # - quantization: "awq" or "gptq" (if quantized models available, ~4x memory reduction)
-    # - gpu_memory_utilization: 0.0-1.0 (fraction of GPU memory to use)
-    all_models_config = {
-        "Qwen3-14B": {
-            "model_path": "Qwen/Qwen3-14B",
-            "max_tokens": 4096,
-            "temperature": 0.7,
-            "dtype": "float16",  # Use half precision to reduce memory
-            "quantization": None,  # Set to "awq" or "gptq" if quantized model available
-            "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
-            "max_model_len": 8192,  # Limit context length to save memory
-        },
-        "NVIDIA-Nemotron-Nano-12B-v2": {
-            "model_path": "nvidia/NVIDIA-Nemotron-Nano-12B-v2",
-            "max_tokens": 8192,  # Increased for reasoning mode (recommended 1024+)
-            "temperature": 0.6,  # Recommended temperature for reasoning mode
-            "top_p": 0.95,  # Recommended top_p for reasoning mode
-            "dtype": "float16",  # Use half precision to reduce memory
-            "quantization": None,  # Set to "awq" or "gptq" if quantized model available
-            "gpu_memory_utilization": 0.85,  # Use 85% of GPU memory
-            "max_model_len": 16384,  # Increased for long reasoning traces
-            "use_chat_template": True,  # Nemotron requires chat template
-            "system_prompt": "/think",  # Enable reasoning mode
-        }
-    }
+    all_models_config = get_all_models_config()
 
     # Filter models based on CLI argument
     if args.model == "nvidia":
@@ -448,6 +419,10 @@ def main():
                 "gpu_memory_utilization": config.get('gpu_memory_utilization', 0.9),
                 "max_model_len": config.get('max_model_len', None),
             }
+            
+            # Set max_num_batched_tokens to match max_model_len to avoid ValueError
+            if llm_kwargs.get('max_model_len') is not None:
+                llm_kwargs["max_num_batched_tokens"] = llm_kwargs['max_model_len']
             
             # Add quantization if specified
             if config.get('quantization'):

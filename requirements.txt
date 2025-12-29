@@ -1,7 +1,0 @@
-vllm>=0.6.0
-datasets
-torch
-transformers
-accelerate
-tqdm
-pandas

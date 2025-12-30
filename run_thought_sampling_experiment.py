@@ -3,22 +3,36 @@ Experiment: Thought Sampling Consistency Analysis
 
 For each question in rguan72/chicken-scratch-tests:
 1. Sample 10 CoTs per question for qwen and nvidia
-2. Run thought sampling resamples on each CoT
-3. Order results by difference in answer spread between on-policy and off-policy
+2. Run thought sampling resamples on each CoT at multiple prefix fractions
+3. Treat each (CoT, fraction) pair as a distinct entry
+4. Order results by (off_policy_spread - on_policy_spread) descending
+   (most interesting when off-policy spread >> on-policy spread)
 
 Optimized for maximum vLLM throughput:
 - Each model loaded only ONCE
 - All prompts batched together for parallel processing
 - GPU memory utilization maximized for RTX 6000 (96GB VRAM)
+
+Output files:
+- cot_samples.jsonl: All generated CoT samples with sample_id
+- resample_results.jsonl: All resamples with unique resample_id and cot_prefix for offline analysis
+- ordered_results.jsonl: Results ordered by spread difference (off - on), one entry per (sample_id, fraction)
+- experiment_summary.json: Summary statistics including spread mean/std
+- spread_distributions.png: Histograms of on-policy, off-policy, and difference distributions
 """
 
 import json
 import math
 import gc
+import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
+
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
 
 from datasets import load_dataset
 from vllm import LLM, SamplingParams
@@ -60,19 +74,22 @@ class ResampleTask:
 @dataclass
 class ResampleResult:
     """Result from a single resample."""
+    resample_id: int  # Unique ID for cross-referencing with ordered_results.jsonl
     cot_sample_id: int
     fraction: float
     model: str
+    cot_prefix: str  # The CoT prefix used for resampling (for offline analysis)
     completion: str
     extracted_answer: Optional[str]
 
 
 @dataclass
 class ThoughtSamplingResult:
-    """Final result for a single CoT."""
+    """Final result for a single (CoT, fraction) pair."""
     cot_sample: CoTSample
-    on_policy_histograms: Dict[float, Dict[str, int]]
-    off_policy_histograms: Dict[float, Dict[str, int]]
+    fraction: float  # Each fraction is treated as a distinct entry
+    on_policy_histogram: Dict[str, int]
+    off_policy_histogram: Dict[str, int]
     on_policy_spread: float
     off_policy_spread: float
     spread_difference: float
@@ -197,6 +214,7 @@ def run_experiment(
     all_resample_results: Dict[str, List[ResampleResult]] = defaultdict(list)  # model -> results
 
     sample_id_counter = 0
+    resample_id_counter = 0
 
     # ========================================================================
     # PHASE 1: Process with QWEN (load once, do all qwen work)
@@ -299,6 +317,7 @@ def run_experiment(
                 qwen_resample_metadata.append({
                     "cot_sample_id": sample.sample_id,
                     "fraction": f,
+                    "cot_prefix": cot_prefix,
                 })
 
     print(f"[Qwen] Running {len(qwen_resample_prompts)} resamples...")
@@ -311,12 +330,15 @@ def run_experiment(
             extracted = extract_answer(completion)
 
             all_resample_results["qwen"].append(ResampleResult(
+                resample_id=resample_id_counter,
                 cot_sample_id=meta["cot_sample_id"],
                 fraction=meta["fraction"],
                 model="qwen",
+                cot_prefix=meta["cot_prefix"],
                 completion=completion,
                 extracted_answer=extracted,
             ))
+            resample_id_counter += 1
 
     print(f"[Qwen] Completed {len(all_resample_results['qwen'])} resamples")
 
@@ -426,6 +448,7 @@ def run_experiment(
                 nvidia_resample_metadata.append({
                     "cot_sample_id": sample.sample_id,
                     "fraction": f,
+                    "cot_prefix": cot_prefix,
                 })
 
     # Nvidia off-policy (for qwen CoTs)
@@ -447,6 +470,7 @@ def run_experiment(
                 nvidia_resample_metadata.append({
                     "cot_sample_id": sample.sample_id,
                     "fraction": f,
+                    "cot_prefix": cot_prefix,
                 })
 
     print(f"[Nvidia] Running {len(nvidia_resample_prompts)} resamples...")
@@ -459,12 +483,15 @@ def run_experiment(
             extracted = extract_answer(completion)
 
             all_resample_results["nvidia"].append(ResampleResult(
+                resample_id=resample_id_counter,
                 cot_sample_id=meta["cot_sample_id"],
                 fraction=meta["fraction"],
                 model="nvidia",
+                cot_prefix=meta["cot_prefix"],
                 completion=completion,
                 extracted_answer=extracted,
             ))
+            resample_id_counter += 1
 
     print(f"[Nvidia] Completed {len(all_resample_results['nvidia'])} resamples")
 
@@ -522,6 +549,7 @@ def run_experiment(
                 qwen_offpolicy_metadata.append({
                     "cot_sample_id": sample.sample_id,
                     "fraction": f,
+                    "cot_prefix": cot_prefix,
                 })
 
     print(f"[Qwen] Running {len(qwen_offpolicy_prompts)} off-policy resamples...")
@@ -534,12 +562,15 @@ def run_experiment(
             extracted = extract_answer(completion)
 
             all_resample_results["qwen"].append(ResampleResult(
+                resample_id=resample_id_counter,
                 cot_sample_id=meta["cot_sample_id"],
                 fraction=meta["fraction"],
                 model="qwen",
+                cot_prefix=meta["cot_prefix"],
                 completion=completion,
                 extracted_answer=extracted,
             ))
+            resample_id_counter += 1
 
     print(f"[Qwen] Total qwen resamples: {len(all_resample_results['qwen'])}")
 
@@ -572,7 +603,7 @@ def run_experiment(
     total_resamples = sum(len(r) for r in all_resample_results.values())
     print(f"Saved {total_resamples} resample results to {resamples_path}")
 
-    # Build histograms per CoT sample
+    # Build histograms per CoT sample per fraction
     # Structure: cot_sample_id -> fraction -> model -> list of answers
     resample_answers = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
@@ -580,17 +611,12 @@ def run_experiment(
         for r in results:
             resample_answers[r.cot_sample_id][r.fraction][model].append(r.extracted_answer)
 
-    # Compute final results
+    # Compute final results - one entry per (sample_id, fraction) pair
     final_results = []
 
     for sample_id, sample in all_cot_samples.items():
         source_model = sample.source_model
         other_model = "nvidia" if source_model == "qwen" else "qwen"
-
-        on_policy_histograms = {}
-        off_policy_histograms = {}
-        on_policy_spreads = []
-        off_policy_spreads = []
 
         for f in fractions:
             on_answers = resample_answers[sample_id][f][source_model]
@@ -599,45 +625,100 @@ def run_experiment(
             on_hist = build_histogram(on_answers)
             off_hist = build_histogram(off_answers)
 
-            on_policy_histograms[f] = on_hist
-            off_policy_histograms[f] = off_hist
+            on_spread = compute_entropy(on_hist)
+            off_spread = compute_entropy(off_hist)
 
-            on_policy_spreads.append(compute_entropy(on_hist))
-            off_policy_spreads.append(compute_entropy(off_hist))
+            final_results.append(ThoughtSamplingResult(
+                cot_sample=sample,
+                fraction=f,
+                on_policy_histogram=on_hist,
+                off_policy_histogram=off_hist,
+                on_policy_spread=on_spread,
+                off_policy_spread=off_spread,
+                spread_difference=off_spread - on_spread,  # off_policy - on_policy (most interesting when positive/large)
+            ))
 
-        avg_on_spread = sum(on_policy_spreads) / len(on_policy_spreads) if on_policy_spreads else 0
-        avg_off_spread = sum(off_policy_spreads) / len(off_policy_spreads) if off_policy_spreads else 0
-
-        final_results.append(ThoughtSamplingResult(
-            cot_sample=sample,
-            on_policy_histograms=on_policy_histograms,
-            off_policy_histograms=off_policy_histograms,
-            on_policy_spread=avg_on_spread,
-            off_policy_spread=avg_off_spread,
-            spread_difference=avg_on_spread - avg_off_spread,
-        ))
-
-    # Sort by spread difference
+    # Sort by spread difference (off_policy - on_policy), descending
+    # Most interesting cases are when off_policy spread >> on_policy spread
     final_results.sort(key=lambda r: r.spread_difference, reverse=True)
 
-    # Save ordered results
+    # Save ordered results - each entry is a (sample_id, fraction) pair
     ordered_results_path = output_path / "ordered_results.jsonl"
     with open(ordered_results_path, "w") as f:
-        for result in final_results:
+        for idx, result in enumerate(final_results):
             entry = {
+                "rank": idx + 1,
                 "sample_id": result.cot_sample.sample_id,
+                "fraction": result.fraction,
                 "question_id": result.cot_sample.question_id,
                 "source_model": result.cot_sample.source_model,
                 "on_policy_spread": result.on_policy_spread,
                 "off_policy_spread": result.off_policy_spread,
                 "spread_difference": result.spread_difference,
-                "on_policy_histograms": {str(k): v for k, v in result.on_policy_histograms.items()},
-                "off_policy_histograms": {str(k): v for k, v in result.off_policy_histograms.items()},
+                "on_policy_histogram": result.on_policy_histogram,
+                "off_policy_histogram": result.off_policy_histogram,
+                "cot_text": result.cot_sample.cot_text,  # Full CoT text
                 "cot_text_preview": result.cot_sample.cot_text[:300] + "..." if len(result.cot_sample.cot_text) > 300 else result.cot_sample.cot_text,
+                "problem": result.cot_sample.problem,  # Include problem for context
                 "extracted_answer": result.cot_sample.extracted_answer,
                 "ground_truth": result.cot_sample.ground_truth_answer,
             }
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    # Compute overall spread statistics
+    on_policy_spreads_all = [r.on_policy_spread for r in final_results]
+    off_policy_spreads_all = [r.off_policy_spread for r in final_results]
+    spread_differences_all = [r.spread_difference for r in final_results]
+
+    on_policy_mean = statistics.mean(on_policy_spreads_all) if on_policy_spreads_all else 0
+    on_policy_std = statistics.stdev(on_policy_spreads_all) if len(on_policy_spreads_all) > 1 else 0
+    off_policy_mean = statistics.mean(off_policy_spreads_all) if off_policy_spreads_all else 0
+    off_policy_std = statistics.stdev(off_policy_spreads_all) if len(off_policy_spreads_all) > 1 else 0
+    diff_mean = statistics.mean(spread_differences_all) if spread_differences_all else 0
+    diff_std = statistics.stdev(spread_differences_all) if len(spread_differences_all) > 1 else 0
+
+    # Print spread statistics
+    print("\n" + "=" * 70)
+    print("SPREAD STATISTICS")
+    print("=" * 70)
+    print(f"On-policy spread:   mean = {on_policy_mean:.4f}, std = {on_policy_std:.4f}")
+    print(f"Off-policy spread:  mean = {off_policy_mean:.4f}, std = {off_policy_std:.4f}")
+    print(f"Spread difference:  mean = {diff_mean:.4f}, std = {diff_std:.4f}")
+    print(f"  (difference = off_policy - on_policy)")
+
+    # Generate distribution plots
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    # On-policy spread distribution
+    axes[0].hist(on_policy_spreads_all, bins=30, edgecolor='black', alpha=0.7, color='blue')
+    axes[0].axvline(on_policy_mean, color='red', linestyle='--', linewidth=2, label=f'Mean: {on_policy_mean:.3f}')
+    axes[0].set_xlabel('On-Policy Spread (Entropy)')
+    axes[0].set_ylabel('Frequency')
+    axes[0].set_title('On-Policy Spread Distribution')
+    axes[0].legend()
+
+    # Off-policy spread distribution
+    axes[1].hist(off_policy_spreads_all, bins=30, edgecolor='black', alpha=0.7, color='orange')
+    axes[1].axvline(off_policy_mean, color='red', linestyle='--', linewidth=2, label=f'Mean: {off_policy_mean:.3f}')
+    axes[1].set_xlabel('Off-Policy Spread (Entropy)')
+    axes[1].set_ylabel('Frequency')
+    axes[1].set_title('Off-Policy Spread Distribution')
+    axes[1].legend()
+
+    # Spread difference distribution
+    axes[2].hist(spread_differences_all, bins=30, edgecolor='black', alpha=0.7, color='green')
+    axes[2].axvline(diff_mean, color='red', linestyle='--', linewidth=2, label=f'Mean: {diff_mean:.3f}')
+    axes[2].axvline(0, color='black', linestyle='-', linewidth=1, alpha=0.5)
+    axes[2].set_xlabel('Spread Difference (Off - On)')
+    axes[2].set_ylabel('Frequency')
+    axes[2].set_title('Spread Difference Distribution')
+    axes[2].legend()
+
+    plt.tight_layout()
+    plot_path = output_path / "spread_distributions.png"
+    plt.savefig(plot_path, dpi=150)
+    plt.close()
+    print(f"\nDistribution plot saved to: {plot_path}")
 
     # Save summary
     summary = {
@@ -655,10 +736,26 @@ def run_experiment(
             "qwen_cots": len(qwen_cot_samples),
             "nvidia_cots": len(nvidia_cot_samples),
         },
+        "spread_statistics": {
+            "on_policy": {
+                "mean": round(on_policy_mean, 4),
+                "std": round(on_policy_std, 4),
+            },
+            "off_policy": {
+                "mean": round(off_policy_mean, 4),
+                "std": round(off_policy_std, 4),
+            },
+            "difference": {
+                "mean": round(diff_mean, 4),
+                "std": round(diff_std, 4),
+                "note": "difference = off_policy - on_policy",
+            },
+        },
         "top_20_by_spread_difference": [
             {
                 "rank": i + 1,
                 "sample_id": r.cot_sample.sample_id,
+                "fraction": r.fraction,
                 "question_id": r.cot_sample.question_id,
                 "source_model": r.cot_sample.source_model,
                 "on_policy_spread": round(r.on_policy_spread, 4),
@@ -679,11 +776,11 @@ def run_experiment(
     print("=" * 70)
     print(f"Total CoT samples: {len(all_cot_samples)}")
     print(f"Total resamples: {total_resamples}")
-    print(f"\nTop 10 by spread difference (on-policy - off-policy):")
+    print(f"\nTop 10 by spread difference (off-policy - on-policy):")
     print("-" * 70)
 
     for i, result in enumerate(final_results[:10]):
-        print(f"{i+1:2d}. Sample {result.cot_sample.sample_id} | {result.cot_sample.question_id}")
+        print(f"{i+1:2d}. Sample {result.cot_sample.sample_id} @ {result.fraction:.0%} | {result.cot_sample.question_id}")
         print(f"    Source: {result.cot_sample.source_model}")
         print(f"    On-policy spread:  {result.on_policy_spread:.4f}")
         print(f"    Off-policy spread: {result.off_policy_spread:.4f}")

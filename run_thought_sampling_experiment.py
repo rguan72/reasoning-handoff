@@ -19,6 +19,7 @@ Output files:
 - ordered_results.jsonl: Results ordered by spread difference (off - on), one entry per (sample_id, fraction)
 - experiment_summary.json: Summary statistics including spread mean/std
 - spread_distributions.png: Histograms of on-policy, off-policy, and difference distributions
+- spread_distributions.html: Interactive plotly version of the distributions
 """
 
 import json
@@ -30,9 +31,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from datasets import load_dataset
 from vllm import LLM, SamplingParams
@@ -686,39 +686,63 @@ def run_experiment(
     print(f"Spread difference:  mean = {diff_mean:.4f}, std = {diff_std:.4f}")
     print(f"  (difference = off_policy - on_policy)")
 
-    # Generate distribution plots
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    # Generate distribution plots with plotly
+    fig = make_subplots(
+        rows=1, cols=3,
+        subplot_titles=(
+            'On-Policy Spread Distribution',
+            'Off-Policy Spread Distribution',
+            'Spread Difference Distribution'
+        ),
+        horizontal_spacing=0.08
+    )
 
     # On-policy spread distribution
-    axes[0].hist(on_policy_spreads_all, bins=30, edgecolor='black', alpha=0.7, color='blue')
-    axes[0].axvline(on_policy_mean, color='red', linestyle='--', linewidth=2, label=f'Mean: {on_policy_mean:.3f}')
-    axes[0].set_xlabel('On-Policy Spread (Entropy)')
-    axes[0].set_ylabel('Frequency')
-    axes[0].set_title('On-Policy Spread Distribution')
-    axes[0].legend()
+    fig.add_trace(
+        go.Histogram(x=on_policy_spreads_all, nbinsx=30, marker_color='blue', opacity=0.7, name='On-Policy'),
+        row=1, col=1
+    )
+    fig.add_vline(x=on_policy_mean, line_dash='dash', line_color='red', row=1, col=1,
+                  annotation_text=f'Mean: {on_policy_mean:.3f}', annotation_position='top')
 
     # Off-policy spread distribution
-    axes[1].hist(off_policy_spreads_all, bins=30, edgecolor='black', alpha=0.7, color='orange')
-    axes[1].axvline(off_policy_mean, color='red', linestyle='--', linewidth=2, label=f'Mean: {off_policy_mean:.3f}')
-    axes[1].set_xlabel('Off-Policy Spread (Entropy)')
-    axes[1].set_ylabel('Frequency')
-    axes[1].set_title('Off-Policy Spread Distribution')
-    axes[1].legend()
+    fig.add_trace(
+        go.Histogram(x=off_policy_spreads_all, nbinsx=30, marker_color='orange', opacity=0.7, name='Off-Policy'),
+        row=1, col=2
+    )
+    fig.add_vline(x=off_policy_mean, line_dash='dash', line_color='red', row=1, col=2,
+                  annotation_text=f'Mean: {off_policy_mean:.3f}', annotation_position='top')
 
     # Spread difference distribution
-    axes[2].hist(spread_differences_all, bins=30, edgecolor='black', alpha=0.7, color='green')
-    axes[2].axvline(diff_mean, color='red', linestyle='--', linewidth=2, label=f'Mean: {diff_mean:.3f}')
-    axes[2].axvline(0, color='black', linestyle='-', linewidth=1, alpha=0.5)
-    axes[2].set_xlabel('Spread Difference (Off - On)')
-    axes[2].set_ylabel('Frequency')
-    axes[2].set_title('Spread Difference Distribution')
-    axes[2].legend()
+    fig.add_trace(
+        go.Histogram(x=spread_differences_all, nbinsx=30, marker_color='green', opacity=0.7, name='Difference'),
+        row=1, col=3
+    )
+    fig.add_vline(x=diff_mean, line_dash='dash', line_color='red', row=1, col=3,
+                  annotation_text=f'Mean: {diff_mean:.3f}', annotation_position='top')
+    fig.add_vline(x=0, line_dash='solid', line_color='black', opacity=0.5, row=1, col=3)
 
-    plt.tight_layout()
-    plot_path = output_path / "spread_distributions.png"
-    plt.savefig(plot_path, dpi=150)
-    plt.close()
-    print(f"\nDistribution plot saved to: {plot_path}")
+    # Update layout
+    fig.update_xaxes(title_text='On-Policy Spread (Entropy)', row=1, col=1)
+    fig.update_xaxes(title_text='Off-Policy Spread (Entropy)', row=1, col=2)
+    fig.update_xaxes(title_text='Spread Difference (Off - On)', row=1, col=3)
+    fig.update_yaxes(title_text='Frequency', row=1, col=1)
+    fig.update_yaxes(title_text='Frequency', row=1, col=2)
+    fig.update_yaxes(title_text='Frequency', row=1, col=3)
+
+    fig.update_layout(
+        title_text='Spread Distribution Analysis',
+        showlegend=False,
+        width=1500,
+        height=500
+    )
+
+    # Save as PNG and HTML
+    plot_path_png = output_path / "spread_distributions.png"
+    plot_path_html = output_path / "spread_distributions.html"
+    fig.write_image(str(plot_path_png), scale=2)
+    fig.write_html(str(plot_path_html))
+    print(f"\nDistribution plots saved to: {plot_path_png} and {plot_path_html}")
 
     # Save summary
     summary = {

@@ -173,6 +173,15 @@ def cleanup_gpu():
         pass
 
 
+def _generate_fake_completion(problem: str, idx: int, is_resample: bool = False) -> str:
+    """Generate a fake completion for dry run mode."""
+    answers = ["42", "17", "256", "3.14", "100", "\\frac{1}{2}", "x^2 + 1", "0"]
+    answer = answers[idx % len(answers)]
+    if is_resample:
+        return f"Continuing from prefix... Let me solve step {idx}. The calculation gives us {answer}.</think>\n\nThe answer is \\boxed{{{answer}}}"
+    return f"Let me solve this problem about: {problem[:50]}...\n\nStep 1: Analyze the problem.\nStep 2: Apply the formula.\nStep 3: Calculate the result.\nStep 4: Verify the answer is {answer}.</think>\n\nThe answer is \\boxed{{{answer}}}"
+
+
 def run_experiment(
     num_cot_samples: int = 10,
     num_resample: int = 10,
@@ -180,6 +189,7 @@ def run_experiment(
     output_dir: str = "./experiment_results",
     seed: Optional[int] = 42,
     gpu_memory_utilization: float = 0.90,
+    dry_run: bool = False,
 ):
     """
     Run the full experiment with maximum vLLM throughput.
@@ -196,6 +206,7 @@ def run_experiment(
         output_dir: Directory for output files
         seed: Random seed
         gpu_memory_utilization: Fraction of GPU memory to use (0.90 for 96GB)
+        dry_run: If True, skip LLM calls and generate fake data to verify prompts
     """
     if fractions is None:
         fractions = [0.25, 0.5, 0.75]
@@ -220,35 +231,41 @@ def run_experiment(
     # PHASE 1: Process with QWEN (load once, do all qwen work)
     # ========================================================================
     print("\n" + "=" * 70)
-    print("PHASE 1: Loading Qwen and running ALL Qwen inference")
+    print("PHASE 1: Loading Qwen and running ALL Qwen inference" + (" [DRY RUN]" if dry_run else ""))
     print("=" * 70)
 
     qwen_config = MODEL_CONFIGS["qwen"]
-    print(f"Loading {qwen_config['name']}...")
-    print(f"  GPU memory utilization: {gpu_memory_utilization}")
-
-    qwen_llm = LLM(
-        model=qwen_config["model_path"],
-        trust_remote_code=True,
-        tensor_parallel_size=1,
-        dtype=qwen_config["dtype"],
-        gpu_memory_utilization=gpu_memory_utilization,
-        max_model_len=qwen_config["max_model_len"],
-        max_num_batched_tokens=qwen_config["max_num_batched_tokens"],
-        seed=seed,
-    )
-
+    qwen_llm = None
     qwen_tokenizer = None
-    if qwen_config["use_chat_template"]:
-        qwen_tokenizer = AutoTokenizer.from_pretrained(
-            qwen_config["model_path"], trust_remote_code=True
+    qwen_sampling_params = None
+
+    if not dry_run:
+        print(f"Loading {qwen_config['name']}...")
+        print(f"  GPU memory utilization: {gpu_memory_utilization}")
+
+        qwen_llm = LLM(
+            model=qwen_config["model_path"],
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            dtype=qwen_config["dtype"],
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=qwen_config["max_model_len"],
+            max_num_batched_tokens=qwen_config["max_num_batched_tokens"],
+            seed=seed,
         )
 
-    qwen_sampling_params = SamplingParams(
-        temperature=qwen_config["temperature"],
-        max_tokens=qwen_config["max_tokens"],
-        top_p=qwen_config["top_p"],
-    )
+        if qwen_config["use_chat_template"]:
+            qwen_tokenizer = AutoTokenizer.from_pretrained(
+                qwen_config["model_path"], trust_remote_code=True
+            )
+
+        qwen_sampling_params = SamplingParams(
+            temperature=qwen_config["temperature"],
+            max_tokens=qwen_config["max_tokens"],
+            top_p=qwen_config["top_p"],
+        )
+    else:
+        print(f"[DRY RUN] Skipping model load for {qwen_config['name']}")
 
     # 1a. Generate CoTs from qwen
     print(f"\n[Qwen] Generating {len(questions) * num_cot_samples} CoTs...")
@@ -265,13 +282,24 @@ def run_experiment(
                 "answer": q["answer"],
             })
 
-    qwen_cot_outputs = qwen_llm.generate(qwen_cot_prompts, qwen_sampling_params)
+    if dry_run:
+        print(f"\n[DRY RUN] Sample CoT prompt for qwen (showing first):")
+        print("-" * 60)
+        print(qwen_cot_prompts[0][:500] + "..." if len(qwen_cot_prompts[0]) > 500 else qwen_cot_prompts[0])
+        print("-" * 60)
+
+    qwen_cot_completions = []
+    if dry_run:
+        for i, meta in enumerate(qwen_cot_metadata):
+            qwen_cot_completions.append(_generate_fake_completion(meta["problem"], i))
+    else:
+        qwen_cot_outputs = qwen_llm.generate(qwen_cot_prompts, qwen_sampling_params)
+        qwen_cot_completions = [output.outputs[0].text for output in qwen_cot_outputs]
 
     # Process qwen CoT outputs
     qwen_cot_samples = []
-    for i, output in enumerate(qwen_cot_outputs):
+    for i, completion in enumerate(qwen_cot_completions):
         meta = qwen_cot_metadata[i]
-        completion = output.outputs[0].text
         cot_text = extract_cot_from_completion(completion)
         extracted = extract_answer(completion)
 
@@ -322,11 +350,18 @@ def run_experiment(
 
     print(f"[Qwen] Running {len(qwen_resample_prompts)} resamples...")
     if qwen_resample_prompts:
-        qwen_resample_outputs = qwen_llm.generate(qwen_resample_prompts, qwen_sampling_params)
+        if dry_run:
+            print(f"\n[DRY RUN] Sample resample prompt for qwen (showing first):")
+            print("-" * 60)
+            print(qwen_resample_prompts[0][:500] + "..." if len(qwen_resample_prompts[0]) > 500 else qwen_resample_prompts[0])
+            print("-" * 60)
+            qwen_resample_completions = [_generate_fake_completion("", i, is_resample=True) for i in range(len(qwen_resample_prompts))]
+        else:
+            qwen_resample_outputs = qwen_llm.generate(qwen_resample_prompts, qwen_sampling_params)
+            qwen_resample_completions = [output.outputs[0].text for output in qwen_resample_outputs]
 
-        for i, output in enumerate(qwen_resample_outputs):
+        for i, completion in enumerate(qwen_resample_completions):
             meta = qwen_resample_metadata[i]
-            completion = output.outputs[0].text
             extracted = extract_answer(completion)
 
             all_resample_results["qwen"].append(ResampleResult(
@@ -343,43 +378,50 @@ def run_experiment(
     print(f"[Qwen] Completed {len(all_resample_results['qwen'])} resamples")
 
     # Cleanup qwen
-    del qwen_llm
-    if qwen_tokenizer:
-        del qwen_tokenizer
-    cleanup_gpu()
+    if not dry_run:
+        del qwen_llm
+        if qwen_tokenizer:
+            del qwen_tokenizer
+        cleanup_gpu()
 
     # ========================================================================
     # PHASE 2: Process with NVIDIA (load once, do all nvidia work)
     # ========================================================================
     print("\n" + "=" * 70)
-    print("PHASE 2: Loading Nvidia and running ALL Nvidia inference")
+    print("PHASE 2: Loading Nvidia and running ALL Nvidia inference" + (" [DRY RUN]" if dry_run else ""))
     print("=" * 70)
 
     nvidia_config = MODEL_CONFIGS["nvidia"]
-    print(f"Loading {nvidia_config['name']}...")
-
-    nvidia_llm = LLM(
-        model=nvidia_config["model_path"],
-        trust_remote_code=True,
-        tensor_parallel_size=1,
-        dtype=nvidia_config["dtype"],
-        gpu_memory_utilization=gpu_memory_utilization,
-        max_model_len=nvidia_config["max_model_len"],
-        max_num_batched_tokens=nvidia_config["max_num_batched_tokens"],
-        seed=seed,
-    )
-
+    nvidia_llm = None
     nvidia_tokenizer = None
-    if nvidia_config["use_chat_template"]:
-        nvidia_tokenizer = AutoTokenizer.from_pretrained(
-            nvidia_config["model_path"], trust_remote_code=True
+    nvidia_sampling_params = None
+
+    if not dry_run:
+        print(f"Loading {nvidia_config['name']}...")
+
+        nvidia_llm = LLM(
+            model=nvidia_config["model_path"],
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            dtype=nvidia_config["dtype"],
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=nvidia_config["max_model_len"],
+            max_num_batched_tokens=nvidia_config["max_num_batched_tokens"],
+            seed=seed,
         )
 
-    nvidia_sampling_params = SamplingParams(
-        temperature=nvidia_config["temperature"],
-        max_tokens=nvidia_config["max_tokens"],
-        top_p=nvidia_config["top_p"],
-    )
+        if nvidia_config["use_chat_template"]:
+            nvidia_tokenizer = AutoTokenizer.from_pretrained(
+                nvidia_config["model_path"], trust_remote_code=True
+            )
+
+        nvidia_sampling_params = SamplingParams(
+            temperature=nvidia_config["temperature"],
+            max_tokens=nvidia_config["max_tokens"],
+            top_p=nvidia_config["top_p"],
+        )
+    else:
+        print(f"[DRY RUN] Skipping model load for {nvidia_config['name']}")
 
     # 2a. Generate CoTs from nvidia
     print(f"\n[Nvidia] Generating {len(questions) * num_cot_samples} CoTs...")
@@ -396,13 +438,24 @@ def run_experiment(
                 "answer": q["answer"],
             })
 
-    nvidia_cot_outputs = nvidia_llm.generate(nvidia_cot_prompts, nvidia_sampling_params)
+    if dry_run:
+        print(f"\n[DRY RUN] Sample CoT prompt for nvidia (showing first):")
+        print("-" * 60)
+        print(nvidia_cot_prompts[0][:500] + "..." if len(nvidia_cot_prompts[0]) > 500 else nvidia_cot_prompts[0])
+        print("-" * 60)
+
+    nvidia_cot_completions = []
+    if dry_run:
+        for i, meta in enumerate(nvidia_cot_metadata):
+            nvidia_cot_completions.append(_generate_fake_completion(meta["problem"], i + 1000))
+    else:
+        nvidia_cot_outputs = nvidia_llm.generate(nvidia_cot_prompts, nvidia_sampling_params)
+        nvidia_cot_completions = [output.outputs[0].text for output in nvidia_cot_outputs]
 
     # Process nvidia CoT outputs
     nvidia_cot_samples = []
-    for i, output in enumerate(nvidia_cot_outputs):
+    for i, completion in enumerate(nvidia_cot_completions):
         meta = nvidia_cot_metadata[i]
-        completion = output.outputs[0].text
         cot_text = extract_cot_from_completion(completion)
         extracted = extract_answer(completion)
 
@@ -475,11 +528,18 @@ def run_experiment(
 
     print(f"[Nvidia] Running {len(nvidia_resample_prompts)} resamples...")
     if nvidia_resample_prompts:
-        nvidia_resample_outputs = nvidia_llm.generate(nvidia_resample_prompts, nvidia_sampling_params)
+        if dry_run:
+            print(f"\n[DRY RUN] Sample resample prompt for nvidia (showing first):")
+            print("-" * 60)
+            print(nvidia_resample_prompts[0][:500] + "..." if len(nvidia_resample_prompts[0]) > 500 else nvidia_resample_prompts[0])
+            print("-" * 60)
+            nvidia_resample_completions = [_generate_fake_completion("", i, is_resample=True) for i in range(len(nvidia_resample_prompts))]
+        else:
+            nvidia_resample_outputs = nvidia_llm.generate(nvidia_resample_prompts, nvidia_sampling_params)
+            nvidia_resample_completions = [output.outputs[0].text for output in nvidia_resample_outputs]
 
-        for i, output in enumerate(nvidia_resample_outputs):
+        for i, completion in enumerate(nvidia_resample_completions):
             meta = nvidia_resample_metadata[i]
-            completion = output.outputs[0].text
             extracted = extract_answer(completion)
 
             all_resample_results["nvidia"].append(ResampleResult(
@@ -496,35 +556,39 @@ def run_experiment(
     print(f"[Nvidia] Completed {len(all_resample_results['nvidia'])} resamples")
 
     # Cleanup nvidia
-    del nvidia_llm
-    if nvidia_tokenizer:
-        del nvidia_tokenizer
-    cleanup_gpu()
+    if not dry_run:
+        del nvidia_llm
+        if nvidia_tokenizer:
+            del nvidia_tokenizer
+        cleanup_gpu()
 
     # ========================================================================
     # PHASE 3: Load qwen again for off-policy resamples on nvidia CoTs
     # ========================================================================
     print("\n" + "=" * 70)
-    print("PHASE 3: Loading Qwen for off-policy resamples on Nvidia CoTs")
+    print("PHASE 3: Loading Qwen for off-policy resamples on Nvidia CoTs" + (" [DRY RUN]" if dry_run else ""))
     print("=" * 70)
 
-    qwen_llm = LLM(
-        model=qwen_config["model_path"],
-        trust_remote_code=True,
-        tensor_parallel_size=1,
-        dtype=qwen_config["dtype"],
-        gpu_memory_utilization=gpu_memory_utilization,
-        max_model_len=qwen_config["max_model_len"],
-        max_num_batched_tokens=qwen_config["max_num_batched_tokens"],
-        seed=seed,
-    )
-
-    if qwen_config["use_chat_template"]:
-        qwen_tokenizer = AutoTokenizer.from_pretrained(
-            qwen_config["model_path"], trust_remote_code=True
+    if not dry_run:
+        qwen_llm = LLM(
+            model=qwen_config["model_path"],
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            dtype=qwen_config["dtype"],
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=qwen_config["max_model_len"],
+            max_num_batched_tokens=qwen_config["max_num_batched_tokens"],
+            seed=seed,
         )
+
+        if qwen_config["use_chat_template"]:
+            qwen_tokenizer = AutoTokenizer.from_pretrained(
+                qwen_config["model_path"], trust_remote_code=True
+            )
+        else:
+            qwen_tokenizer = None
     else:
-        qwen_tokenizer = None
+        print(f"[DRY RUN] Skipping model load for {qwen_config['name']}")
 
     # Build off-policy prompts for nvidia CoTs
     print(f"\n[Qwen] Building off-policy resample prompts for nvidia CoTs...")
@@ -554,11 +618,18 @@ def run_experiment(
 
     print(f"[Qwen] Running {len(qwen_offpolicy_prompts)} off-policy resamples...")
     if qwen_offpolicy_prompts:
-        qwen_offpolicy_outputs = qwen_llm.generate(qwen_offpolicy_prompts, qwen_sampling_params)
+        if dry_run:
+            print(f"\n[DRY RUN] Sample off-policy resample prompt for qwen (showing first):")
+            print("-" * 60)
+            print(qwen_offpolicy_prompts[0][:500] + "..." if len(qwen_offpolicy_prompts[0]) > 500 else qwen_offpolicy_prompts[0])
+            print("-" * 60)
+            qwen_offpolicy_completions = [_generate_fake_completion("", i, is_resample=True) for i in range(len(qwen_offpolicy_prompts))]
+        else:
+            qwen_offpolicy_outputs = qwen_llm.generate(qwen_offpolicy_prompts, qwen_sampling_params)
+            qwen_offpolicy_completions = [output.outputs[0].text for output in qwen_offpolicy_outputs]
 
-        for i, output in enumerate(qwen_offpolicy_outputs):
+        for i, completion in enumerate(qwen_offpolicy_completions):
             meta = qwen_offpolicy_metadata[i]
-            completion = output.outputs[0].text
             extracted = extract_answer(completion)
 
             all_resample_results["qwen"].append(ResampleResult(
@@ -575,10 +646,11 @@ def run_experiment(
     print(f"[Qwen] Total qwen resamples: {len(all_resample_results['qwen'])}")
 
     # Final cleanup
-    del qwen_llm
-    if qwen_tokenizer:
-        del qwen_tokenizer
-    cleanup_gpu()
+    if not dry_run:
+        del qwen_llm
+        if qwen_tokenizer:
+            del qwen_tokenizer
+        cleanup_gpu()
 
     # ========================================================================
     # PHASE 4: Aggregate results and compute metrics
@@ -830,6 +902,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--gpu-memory", type=float, default=0.90,
                         help="GPU memory utilization (default: 0.90 for 96GB)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Skip LLM calls and generate fake data to verify prompts")
 
     args = parser.parse_args()
     fractions = [float(f.strip()) for f in args.fractions.split(",")]
@@ -841,4 +915,5 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         seed=args.seed,
         gpu_memory_utilization=args.gpu_memory,
+        dry_run=args.dry_run,
     )

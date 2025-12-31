@@ -9,8 +9,25 @@ from by_hand.prompts import ground_truth, math_prompt
 def evaluate_model(model_key: str):
     results = run_inference(model_key=model_key, prompt=math_prompt, num_runs=20)
     extracted_answers = [extract_answer(result) for result in results]
-    correct_answers = [compare_answers(extracted_answer, ground_truth) for extracted_answer in extracted_answers]
-    accuracy = sum(correct_answers) / len(correct_answers)
+    
+    # Handle None cases: filter out None values for extracted-only accuracy
+    # For overall accuracy, None counts as incorrect
+    correct_answers = []
+    for extracted_answer in extracted_answers:
+        if extracted_answer is None:
+            correct_answers.append(False)  # None counts as incorrect for overall accuracy
+        else:
+            correct_answers.append(compare_answers(extracted_answer, ground_truth))
+    
+    # Overall accuracy (including None cases as incorrect)
+    overall_accuracy = sum(correct_answers) / len(correct_answers)
+    
+    # Accuracy only for extracted answers (excluding None cases)
+    extracted_only = [(ans, correct) for ans, correct in zip(extracted_answers, correct_answers) if ans is not None]
+    if extracted_only:
+        extracted_accuracy = sum(correct for _, correct in extracted_only) / len(extracted_only)
+    else:
+        extracted_accuracy = 0.0
     
     # Save raw results to file in by_hand/runs directory
     runs_dir = Path(__file__).parent / "runs"
@@ -24,8 +41,11 @@ def evaluate_model(model_key: str):
         json.dump(results, f, indent=2, ensure_ascii=False)
     
     print(f"Results saved to {output_file}")
+    print(f"Overall accuracy: {overall_accuracy:.4f} ({sum(correct_answers)}/{len(correct_answers)})")
+    print(f"Accuracy (extracted only): {extracted_accuracy:.4f} ({sum(correct for _, correct in extracted_only)}/{len(extracted_only)})")
+    print(f"Extraction rate: {len(extracted_only)}/{len(extracted_answers)} ({len(extracted_only)/len(extracted_answers):.4f})")
     
-    return accuracy
+    return overall_accuracy, extracted_accuracy
 
-print(evaluate_model("qwen8"))
-print(evaluate_model("deep"))
+evaluate_model("qwen8")
+evaluate_model("deep")

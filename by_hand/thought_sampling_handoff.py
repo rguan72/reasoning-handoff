@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 from by_hand.answer_extraction import extract_answer
 from by_hand.inference import run_inference, cleanup_model_memory
-from by_hand.long_data import correct_cot_prefix
+from by_hand.long_data import correct_cot_llama
 from by_hand.model_configs import MODEL_CONFIGS
 from by_hand.prompts import construct_prompt
 
@@ -198,7 +198,7 @@ def print_analysis(results: Dict):
 
 if __name__ == "__main__":
     # Example usage
-    split = correct_cot_prefix.split(". ")
+    split = correct_cot_llama.split(". ")
     num_sentences = len(split)
     num_to_take = int(num_sentences * 3 / 4)
     cot_prefix = ". ".join(split[:num_to_take])
@@ -209,7 +209,7 @@ if __name__ == "__main__":
         model_key="deep-llama",
         num_samples=20,
     )
-    print("========Off Policy========")
+    print("========On Policy========")
     print_analysis(results)
 
     # Clean up model memory after first analysis
@@ -221,7 +221,7 @@ if __name__ == "__main__":
         model_key="deep-qwen",
         num_samples=20,
     )
-    print("========On Policy========")
+    print("========Off Policy========")
     print_analysis(results2)
     
     # Clean up model memory after second analysis

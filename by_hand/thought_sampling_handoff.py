@@ -9,7 +9,7 @@ from collections import Counter
 from typing import Dict, List, Optional
 
 from by_hand.answer_extraction import extract_answer
-from by_hand.inference import run_inference
+from by_hand.inference import run_inference, cleanup_model_memory
 from by_hand.model_configs import MODEL_CONFIGS
 from by_hand.prompts import construct_prompt
 
@@ -84,7 +84,6 @@ def analyze_answer_distribution(
     cot_prefix: str,
     model_key: str,
     num_samples: int,
-    seed: Optional[int] = None,
 ) -> Dict:
     """
     Perform thought sampling handoff for a single prompt and CoT prefix.
@@ -96,7 +95,6 @@ def analyze_answer_distribution(
         cot_prefix: The chain-of-thought prefix to continue from
         model_key: Model key from MODEL_CONFIGS
         num_samples: Number of times to sample
-        seed: Random seed for reproducibility (optional)
     
     Returns:
         Dictionary containing:
@@ -121,7 +119,7 @@ def analyze_answer_distribution(
         from vllm import SamplingParams
         from by_hand.inference import get_llm
         
-        llm = get_llm(model_key, seed)
+        llm = get_llm(model_key)
         sampling_params = SamplingParams(
             temperature=config["temperature"],
             max_tokens=config["max_tokens"],
@@ -136,7 +134,6 @@ def analyze_answer_distribution(
             model_key=model_key,
             prompt=full_prompt,
             num_runs=num_samples,
-            seed=seed,
         )
     
     # Extract answers from each completion
@@ -206,24 +203,27 @@ if __name__ == "__main__":
     num_to_take = int(num_sentences * 3 / 4)
     cot_prefix = ". ".join(split[:num_to_take])
     prompt = f"In $\\triangle ABC$ points $D$ and $E$ lie on $\\overline{{AB}}$ so that $AD < AE < AB$, while points $F$ and $G$ lie on $\\overline{{AC}}$ so that $AF < AG < AC$. Suppose $AD = 4$, $DE = 16$, $EB = 8$, $AF = 13$, $FG = 52$, and $GC = 26$. Let $M$ be the reflection of $D$ through $F$, and let $N$ be the reflection of $G$ through $E$. The area of quadrilateral $DEGF$ is $288$. Find the area of heptagon $AFNBCEM$."
-    
     results = analyze_answer_distribution(
         prompt=prompt,
         cot_prefix=cot_prefix,
         model_key="deep-llama",
         num_samples=20,
-        seed=42,
     )
     print("========Off Policy========")
     print_analysis(results)
+
+    # Clean up model memory after first analysis
+    cleanup_model_memory("deep-llama")
 
     results2 = analyze_answer_distribution(
         prompt=prompt,
         cot_prefix=cot_prefix,
         model_key="deep-qwen",
         num_samples=20,
-        seed=42,
     )
     print("========On Policy========")
-    print_analysis(results)
+    print_analysis(results2)
+    
+    # Clean up model memory after second analysis
+    cleanup_model_memory("deep-qwen")
 

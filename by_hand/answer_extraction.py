@@ -42,6 +42,10 @@ def normalize_answer(answer: str) -> str:
     Normalize answer for comparison.
     Removes extra whitespace and normalizes LaTeX formatting.
     """
+    # Convert to string if not already
+    if not isinstance(answer, str):
+        answer = str(answer)
+    
     # Strip \boxed{} wrapper if present (as a fallback if extraction didn't remove it)
     boxed_match = re.search(r'\\boxed\s*\{', answer)
     if boxed_match:
@@ -99,11 +103,15 @@ def normalize_answer(answer: str) -> str:
     return answer.strip()
 
 
-def compare_answers(predicted: str, ground_truth: str) -> bool:
+def compare_answers(predicted: str, ground_truth: str | int | float) -> bool:
     """
     Compare predicted answer with ground truth answer.
     Handles both exact match and symbolic equality.
     """
+    # Convert ground_truth to string if it's not already
+    if not isinstance(ground_truth, str):
+        ground_truth = str(ground_truth)
+    
     # Normalize both answers
     pred_norm = normalize_answer(predicted)
     gt_norm = normalize_answer(ground_truth)

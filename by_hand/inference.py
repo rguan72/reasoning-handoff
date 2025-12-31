@@ -239,3 +239,72 @@ def run_inference_batch(
     
     return completions
 
+
+def clear_llm_cache(model_key: Optional[str] = None, seed: Optional[int] = None):
+    """
+    Clear LLM instances from cache to free GPU memory.
+    
+    Args:
+        model_key: If provided, only clear this specific model. If None, clear all models.
+        seed: If provided along with model_key, clear specific seed variant.
+    """
+    if model_key is None:
+        # Clear all models
+        for cache_key in list(_llm_cache.keys()):
+            llm = _llm_cache.pop(cache_key)
+            del llm
+        print("Cleared all LLM instances from cache")
+    else:
+        # Clear specific model
+        cache_key = f"{model_key}_{seed}" if seed is not None else model_key
+        if cache_key in _llm_cache:
+            llm = _llm_cache.pop(cache_key)
+            del llm
+            print(f"Cleared LLM instance for {cache_key} from cache")
+        else:
+            print(f"No LLM instance found for {cache_key} in cache")
+
+
+def clear_tokenizer_cache(model_key: Optional[str] = None):
+    """
+    Clear tokenizer instances from cache to free memory.
+    
+    Args:
+        model_key: If provided, only clear this specific tokenizer. If None, clear all tokenizers.
+    """
+    if model_key is None:
+        # Clear all tokenizers
+        _tokenizer_cache.clear()
+        print("Cleared all tokenizer instances from cache")
+    else:
+        # Clear specific tokenizer
+        if model_key in _tokenizer_cache:
+            del _tokenizer_cache[model_key]
+            print(f"Cleared tokenizer instance for {model_key} from cache")
+
+
+def cleanup_model_memory(model_key: str, seed: Optional[int] = None):
+    """
+    Clean up all memory associated with a model (LLM and tokenizer).
+    This should be called after finishing evaluation to free GPU memory.
+    
+    Args:
+        model_key: Model key to clean up
+        seed: Optional seed variant to clean up
+    """
+    clear_llm_cache(model_key=model_key, seed=seed)
+    clear_tokenizer_cache(model_key=model_key)
+    
+    # Force garbage collection to ensure memory is freed
+    import gc
+    gc.collect()
+    
+    # Try to clear CUDA cache if available
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print(f"Cleared CUDA cache for {model_key}")
+    except ImportError:
+        pass  # torch not available, skip CUDA cache clearing
+

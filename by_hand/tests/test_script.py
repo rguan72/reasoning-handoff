@@ -16,7 +16,7 @@ mock_datasets = MagicMock()
 mock_datasets.__spec__ = MagicMock()
 sys.modules['datasets'] = mock_datasets
 
-from by_hand.script import evaluate_model, load_math500_problems
+from by_hand.script import evaluate_model, load_aime25_problems
 
 
 def test_evaluate_model_with_correct_answers():
@@ -216,15 +216,15 @@ def test_evaluate_model_with_different_answer_formats():
     assert result['extracted_accuracy'] >= 0.5
 
 
-def test_load_math500_problems_mocks_huggingface():
-    """Test that load_math500_problems correctly mocks HuggingFace dataset loading."""
-    # Create mock dataset with level 3 and 4 problems
+def test_load_aime25_problems_mocks_huggingface():
+    """Test that load_aime25_problems correctly mocks HuggingFace dataset loading."""
+    # Create mock dataset with AIME25 structure (id, problem, answer)
     mock_dataset_items = [
-        {'unique_id': 'prob_1', 'problem': 'Problem 1', 'answer': '10', 'level': 3, 'subject': 'algebra'},
-        {'unique_id': 'prob_2', 'problem': 'Problem 2', 'answer': '20', 'level': 4, 'subject': 'geometry'},
-        {'unique_id': 'prob_3', 'problem': 'Problem 3', 'answer': '30', 'level': 2, 'subject': 'arithmetic'},  # Should be filtered out
-        {'unique_id': 'prob_4', 'problem': 'Problem 4', 'answer': '40', 'level': 3, 'subject': 'algebra'},
-        {'unique_id': 'prob_5', 'problem': 'Problem 5', 'answer': '50', 'level': 4, 'subject': 'geometry'},
+        {'id': 'prob_1', 'problem': 'Problem 1', 'answer': '10'},
+        {'id': 'prob_2', 'problem': 'Problem 2', 'answer': '20'},
+        {'id': 'prob_3', 'problem': 'Problem 3', 'answer': '30'},
+        {'id': 'prob_4', 'problem': 'Problem 4', 'answer': '40'},
+        {'id': 'prob_5', 'problem': 'Problem 5', 'answer': '50'},
     ]
     
     # Create a mock dataset object that can be iterated
@@ -238,23 +238,23 @@ def test_load_math500_problems_mocks_huggingface():
     
     # Mock load_dataset to return our mock dataset
     with patch('by_hand.script.load_dataset', return_value=mock_dataset):
-        problems = load_math500_problems(limit=10, levels=[3, 4])
+        problems = load_aime25_problems(limit=3)
     
-    # Should return 4 problems (level 3 and 4, excluding level 2)
-    assert len(problems) == 4
-    assert all(p['level'] in [3, 4] for p in problems)
+    # Should return 3 problems (limited to 3)
+    assert len(problems) == 3
     assert problems[0]['unique_id'] == 'prob_1'
+    assert problems[0]['problem'] == 'Problem 1'
+    assert problems[0]['answer'] == '10'
     assert problems[1]['unique_id'] == 'prob_2'
-    assert problems[2]['unique_id'] == 'prob_4'
-    assert problems[3]['unique_id'] == 'prob_5'
+    assert problems[2]['unique_id'] == 'prob_3'
 
 
 def test_evaluate_model_with_mocked_huggingface():
     """Test evaluate_model with mocked HuggingFace dataset loading."""
-    # Create mock dataset with level 3 problems
+    # Create mock dataset with AIME25 structure (id, problem, answer)
     mock_dataset_items = [
-        {'unique_id': 'prob_1', 'problem': 'What is 2+2?', 'answer': '4', 'level': 3, 'subject': 'arithmetic'},
-        {'unique_id': 'prob_2', 'problem': 'What is 3+3?', 'answer': '6', 'level': 3, 'subject': 'arithmetic'},
+        {'id': 'prob_1', 'problem': 'What is 2+2?', 'answer': '4'},
+        {'id': 'prob_2', 'problem': 'What is 3+3?', 'answer': '6'},
     ]
     
     # Create a mock dataset object that can be iterated

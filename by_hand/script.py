@@ -6,41 +6,35 @@ from typing import List, Dict, Optional, Tuple
 from datasets import load_dataset
 
 from by_hand.answer_extraction import compare_answers, extract_answer
-from by_hand.inference import run_inference_batch
+from by_hand.inference import run_inference_batch, cleanup_model_memory
 from by_hand.prompts import construct_prompt
 
 
-def load_math500_problems(limit: int = 10, levels: List[int] = [3, 4]) -> List[Dict]:
+def load_aime25_problems(limit: int = 10) -> List[Dict]:
     """
-    Load MATH-500 dataset and filter for level 3/4 problems.
+    Load AIME25 dataset from HuggingFace.
     
     Args:
         limit: Maximum number of problems to return
-        levels: List of levels to filter for (default: [3, 4])
     
     Returns:
-        List of problem dictionaries with fields: unique_id, problem, answer, level, subject
+        List of problem dictionaries with fields: id, problem, answer
     """
-    print(f"Loading MATH-500 dataset...")
-    dataset = load_dataset("HuggingFaceH4/MATH-500", split="test")
+    print(f"Loading AIME25 dataset...")
+    dataset = load_dataset("math-ai/aime25", split="test")
     
-    # Filter for level 3 or 4 problems
-    filtered_problems = []
-    for item in dataset:
-        level = item.get('level')
-        if level in levels:
-            filtered_problems.append({
-                'unique_id': item.get('unique_id'),
-                'problem': item.get('problem'),
-                'answer': item.get('answer'),
-                'level': level,
-                'subject': item.get('subject', 'Unknown')
-            })
-            if len(filtered_problems) >= limit:
-                break
+    problems = []
+    for i, item in enumerate(dataset):
+        problems.append({
+            'unique_id': item.get('id'),
+            'problem': item.get('problem'),
+            'answer': item.get('answer'),
+        })
+        if len(problems) >= limit:
+            break
     
-    print(f"Found {len(filtered_problems)} level {levels} problems (limited to {limit})")
-    return filtered_problems
+    print(f"Found {len(problems)} problems (limited to {limit})")
+    return problems
 
 
 def evaluate_model(model_key: str, problems: List[Dict] = None, num_runs: int = 20):
@@ -49,7 +43,7 @@ def evaluate_model(model_key: str, problems: List[Dict] = None, num_runs: int = 
     
     Args:
         model_key: Model key from model_configs
-        problems: List of problem dictionaries. If None, loads first 10 level 3/4 problems from MATH-500
+        problems: List of problem dictionaries. If None, loads first 10 problems from AIME25
         num_runs: Number of runs per problem
     
     Returns:
@@ -57,7 +51,7 @@ def evaluate_model(model_key: str, problems: List[Dict] = None, num_runs: int = 
     """
     # Load problems if not provided
     if problems is None:
-        problems = load_math500_problems(limit=10, levels=[3, 4])
+        problems = load_aime25_problems(limit=10)
     
     # Prepare all prompts for batch inference
     # Each problem gets num_runs prompts, so we create a list of (problem_idx, prompt) tuples
@@ -107,8 +101,6 @@ def evaluate_model(model_key: str, problems: List[Dict] = None, num_runs: int = 
             'problem_id': problem_id,
             'problem': problem_text,
             'ground_truth': ground_truth,
-            'level': problem.get('level'),
-            'subject': problem.get('subject'),
             'results': results,
             'extracted_answers': extracted_answers,
             'correct_answers': correct_answers,
@@ -167,6 +159,10 @@ def evaluate_model(model_key: str, problems: List[Dict] = None, num_runs: int = 
     # Print per-problem accuracies
     print_per_problem_accuracies(all_results)
     
+    # Clean up model memory to free GPU resources
+    print(f"\nCleaning up model memory for {model_key}...")
+    cleanup_model_memory(model_key)
+    
     return {
         'overall_accuracy': overall_accuracy,
         'extracted_accuracy': extracted_accuracy,
@@ -189,10 +185,8 @@ def print_per_problem_accuracies(problem_results: List[Dict]):
         num_correct = sum(result.get('correct_answers', []))
         num_total = len(result.get('correct_answers', []))
         num_extracted = len([a for a in result.get('extracted_answers', []) if a is not None])
-        level = result.get('level', '?')
-        subject = result.get('subject', 'Unknown')
         
-        print(f"Problem {i} (ID: {problem_id}, Level: {level}, Subject: {subject}):")
+        print(f"Problem {i} (ID: {problem_id}):")
         print(f"  Overall: {overall_acc:.4f} ({num_correct}/{num_total})")
         print(f"  Extracted only: {extracted_acc:.4f} ({num_correct}/{num_extracted})")
         print(f"  Extraction rate: {num_extracted}/{num_total} ({num_extracted/num_total:.4f})")

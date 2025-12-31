@@ -10,7 +10,7 @@ from by_hand.inference import run_inference_batch, cleanup_model_memory
 from by_hand.prompts import construct_prompt
 
 
-def load_aime25_problems(limit: int = 10) -> List[Dict]:
+def load_aime25_problems(limit: int = 100) -> List[Dict]:
     """
     Load AIME25 dataset from HuggingFace.
     

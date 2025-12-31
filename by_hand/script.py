@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 
 from datasets import load_dataset
 
@@ -159,9 +159,13 @@ def evaluate_model(model_key: str, problems: List[Dict] = None, num_runs: int = 
         json.dump(output_data, f, indent=2, ensure_ascii=False)
     
     print(f"Results saved to {output_file}")
+    print(f"\n=== Overall Statistics ===")
     print(f"Overall accuracy: {overall_accuracy:.4f} ({sum(all_correct_answers)}/{len(all_correct_answers)})")
     print(f"Accuracy (extracted only): {extracted_accuracy:.4f} ({sum(correct for _, correct in extracted_only)}/{len(extracted_only)})")
     print(f"Extraction rate: {len(extracted_only)}/{len(all_extracted_answers)} ({len(extracted_only)/len(all_extracted_answers):.4f})")
+    
+    # Print per-problem accuracies
+    print_per_problem_accuracies(all_results)
     
     return {
         'overall_accuracy': overall_accuracy,
@@ -169,6 +173,187 @@ def evaluate_model(model_key: str, problems: List[Dict] = None, num_runs: int = 
         'results': all_results
     }
 
+
+def print_per_problem_accuracies(problem_results: List[Dict]):
+    """
+    Print accuracy statistics for each individual problem.
+    
+    Args:
+        problem_results: List of problem result dictionaries from evaluate_model
+    """
+    print(f"\n=== Per-Problem Accuracies ===")
+    for i, result in enumerate(problem_results, 1):
+        problem_id = result.get('problem_id', f'problem_{i}')
+        overall_acc = result.get('overall_accuracy', 0.0)
+        extracted_acc = result.get('extracted_accuracy', 0.0)
+        num_correct = sum(result.get('correct_answers', []))
+        num_total = len(result.get('correct_answers', []))
+        num_extracted = len([a for a in result.get('extracted_answers', []) if a is not None])
+        level = result.get('level', '?')
+        subject = result.get('subject', 'Unknown')
+        
+        print(f"Problem {i} (ID: {problem_id}, Level: {level}, Subject: {subject}):")
+        print(f"  Overall: {overall_acc:.4f} ({num_correct}/{num_total})")
+        print(f"  Extracted only: {extracted_acc:.4f} ({num_correct}/{num_extracted})")
+        print(f"  Extraction rate: {num_extracted}/{num_total} ({num_extracted/num_total:.4f})")
+
+
+def filter_problems_by_accuracy(
+    problem_results: List[Dict],
+    min_overall_acc: Optional[float] = None,
+    max_overall_acc: Optional[float] = None,
+    min_extracted_acc: Optional[float] = None,
+    max_extracted_acc: Optional[float] = None,
+    accuracy_type: str = 'overall'
+) -> List[Dict]:
+    """
+    Filter problems by accuracy range.
+    
+    Args:
+        problem_results: List of problem result dictionaries from evaluate_model
+        min_overall_acc: Minimum overall accuracy (inclusive)
+        max_overall_acc: Maximum overall accuracy (inclusive)
+        min_extracted_acc: Minimum extracted-only accuracy (inclusive)
+        max_extracted_acc: Maximum extracted-only accuracy (inclusive)
+        accuracy_type: Which accuracy to filter by ('overall', 'extracted', or 'both')
+    
+    Returns:
+        Filtered list of problem results
+    """
+    filtered = []
+    
+    for result in problem_results:
+        overall_acc = result.get('overall_accuracy', 0.0)
+        extracted_acc = result.get('extracted_accuracy', 0.0)
+        
+        # Check overall accuracy filters
+        if accuracy_type in ('overall', 'both'):
+            if min_overall_acc is not None and overall_acc < min_overall_acc:
+                continue
+            if max_overall_acc is not None and overall_acc > max_overall_acc:
+                continue
+        
+        # Check extracted accuracy filters
+        if accuracy_type in ('extracted', 'both'):
+            if min_extracted_acc is not None and extracted_acc < min_extracted_acc:
+                continue
+            if max_extracted_acc is not None and extracted_acc > max_extracted_acc:
+                continue
+        
+        filtered.append(result)
+    
+    return filtered
+
+
+def analyze_results_file(
+    results_file: str,
+    min_overall_acc: Optional[float] = None,
+    max_overall_acc: Optional[float] = None,
+    min_extracted_acc: Optional[float] = None,
+    max_extracted_acc: Optional[float] = None,
+    accuracy_type: str = 'overall'
+):
+    """
+    Load and analyze results from a saved JSON file, optionally filtering by accuracy range.
+    
+    Args:
+        results_file: Path to the results JSON file
+        min_overall_acc: Minimum overall accuracy (inclusive)
+        max_overall_acc: Maximum overall accuracy (inclusive)
+        min_extracted_acc: Minimum extracted-only accuracy (inclusive)
+        max_extracted_acc: Maximum extracted-only accuracy (inclusive)
+        accuracy_type: Which accuracy to filter by ('overall', 'extracted', or 'both')
+    """
+    with open(results_file, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    problem_results = data.get('problems', [])
+    
+    # Apply filters if provided
+    if any([min_overall_acc is not None, max_overall_acc is not None,
+            min_extracted_acc is not None, max_extracted_acc is not None]):
+        problem_results = filter_problems_by_accuracy(
+            problem_results,
+            min_overall_acc=min_overall_acc,
+            max_overall_acc=max_overall_acc,
+            min_extracted_acc=min_extracted_acc,
+            max_extracted_acc=max_extracted_acc,
+            accuracy_type=accuracy_type
+        )
+        print(f"\nFiltered to {len(problem_results)} problems matching criteria")
+    
+    # Print statistics
+    print(f"\n=== Results Analysis ===")
+    print(f"Model: {data.get('model_key', 'unknown')}")
+    print(f"Timestamp: {data.get('timestamp', 'unknown')}")
+    print(f"Number of problems: {len(problem_results)}")
+    print(f"Runs per problem: {data.get('num_runs_per_problem', 'unknown')}")
+    
+    if problem_results:
+        overall_accs = [p.get('overall_accuracy', 0.0) for p in problem_results]
+        extracted_accs = [p.get('extracted_accuracy', 0.0) for p in problem_results]
+        
+        print(f"\nOverall Accuracy:")
+        print(f"  Mean: {sum(overall_accs)/len(overall_accs):.4f}")
+        print(f"  Min: {min(overall_accs):.4f}")
+        print(f"  Max: {max(overall_accs):.4f}")
+        
+        print(f"\nExtracted-Only Accuracy:")
+        print(f"  Mean: {sum(extracted_accs)/len(extracted_accs):.4f}")
+        print(f"  Min: {min(extracted_accs):.4f}")
+        print(f"  Max: {max(extracted_accs):.4f}")
+        
+        # Print per-problem details
+        print_per_problem_accuracies(problem_results)
+    
+    return problem_results
+
 if __name__ == "__main__":
-    evaluate_model("qwen8")
-    evaluate_model("deep")
+    import sys
+    
+    # Check if we're analyzing an existing results file
+    if len(sys.argv) > 1 and sys.argv[1] == "analyze":
+        if len(sys.argv) < 3:
+            print("Usage: python script.py analyze <results_file> [--min-overall FLOAT] [--max-overall FLOAT] [--min-extracted FLOAT] [--max-extracted FLOAT] [--type overall|extracted|both]")
+            sys.exit(1)
+        
+        results_file = sys.argv[2]
+        min_overall = None
+        max_overall = None
+        min_extracted = None
+        max_extracted = None
+        accuracy_type = 'overall'
+        
+        # Parse command-line arguments
+        i = 3
+        while i < len(sys.argv):
+            if sys.argv[i] == '--min-overall' and i + 1 < len(sys.argv):
+                min_overall = float(sys.argv[i + 1])
+                i += 2
+            elif sys.argv[i] == '--max-overall' and i + 1 < len(sys.argv):
+                max_overall = float(sys.argv[i + 1])
+                i += 2
+            elif sys.argv[i] == '--min-extracted' and i + 1 < len(sys.argv):
+                min_extracted = float(sys.argv[i + 1])
+                i += 2
+            elif sys.argv[i] == '--max-extracted' and i + 1 < len(sys.argv):
+                max_extracted = float(sys.argv[i + 1])
+                i += 2
+            elif sys.argv[i] == '--type' and i + 1 < len(sys.argv):
+                accuracy_type = sys.argv[i + 1]
+                i += 2
+            else:
+                i += 1
+        
+        analyze_results_file(
+            results_file,
+            min_overall_acc=min_overall,
+            max_overall_acc=max_overall,
+            min_extracted_acc=min_extracted,
+            max_extracted_acc=max_extracted,
+            accuracy_type=accuracy_type
+        )
+    else:
+        # Run evaluation
+        evaluate_model("qwen8")
+        evaluate_model("deep")

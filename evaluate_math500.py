@@ -151,9 +151,10 @@ def normalize_answer(answer: str) -> str:
     answer = re.sub(r'\\[Bb]ig[lr]?\s*\]', ']', answer)
 
     # Normalize fraction commands: \dfrac, \cfrac, \tfrac -> \frac (they're equivalent)
-    answer = re.sub(r'\\dfrac', r'\\frac', answer)
-    answer = re.sub(r'\\cfrac', r'\\frac', answer)
-    answer = re.sub(r'\\tfrac', r'\\frac', answer)
+    # Use word boundary to ensure we match the full command name
+    answer = re.sub(r'\\dfrac\b', r'\\frac', answer)
+    answer = re.sub(r'\\cfrac\b', r'\\frac', answer)
+    answer = re.sub(r'\\tfrac\b', r'\\frac', answer)
 
     # Normalize LaTeX spacing commands: \  (non-breaking space), \, \; \: \! -> regular space or nothing
     answer = re.sub(r'\\[,;:!]\s*', ' ', answer)  # thin/medium/thick space -> space
@@ -250,7 +251,7 @@ def evaluate_model(
 
     for item in problems:
         problem_text = item['problem']
-        user_content = f"Solve the following math problem step by step. Put your final answer inside \\boxed{{}}.\n\nProblem: {problem_text}"
+        user_content = f"Solve the following math problem step by step but be brief. Put your final answer inside \\boxed{{}}.\n\nProblem: {problem_text}"
 
         if use_chat_template and tokenizer is not None:
             # Use chat template for models that require it (e.g., Nemotron)

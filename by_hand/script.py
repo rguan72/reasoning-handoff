@@ -6,7 +6,7 @@ from typing import List, Dict
 from datasets import load_dataset
 
 from by_hand.answer_extraction import compare_answers, extract_answer
-from by_hand.inference import run_inference
+from by_hand.inference import run_inference_batch
 from by_hand.prompts import construct_prompt
 
 
@@ -59,18 +59,38 @@ def evaluate_model(model_key: str, problems: List[Dict] = None, num_runs: int = 
     if problems is None:
         problems = load_math500_problems(limit=10, levels=[3, 4])
     
+    # Prepare all prompts for batch inference
+    # Each problem gets num_runs prompts, so we create a list of (problem_idx, prompt) tuples
+    all_prompts = []
+    problem_indices = []  # Maps each prompt to its problem index
+    
+    for problem_idx, problem in enumerate(problems):
+        problem_text = problem['problem']
+        prompt = construct_prompt(problem_text)
+        # Add num_runs copies of this prompt
+        for _ in range(num_runs):
+            all_prompts.append(prompt)
+            problem_indices.append(problem_idx)
+    
+    print(f"Running batch inference on {len(all_prompts)} prompts ({len(problems)} problems × {num_runs} runs)...")
+    
+    # Run batch inference on all prompts at once
+    all_results_raw = run_inference_batch(model_key=model_key, prompts=all_prompts)
+    
+    # Group results by problem
     all_results = []
     all_extracted_answers = []
     all_correct_answers = []
     
-    # Evaluate each problem
-    for problem in problems:
+    for problem_idx, problem in enumerate(problems):
+        # Get all results for this problem
+        problem_result_indices = [i for i, p_idx in enumerate(problem_indices) if p_idx == problem_idx]
+        results = [all_results_raw[i] for i in problem_result_indices]
+        
         problem_text = problem['problem']
         ground_truth = problem['answer']
         problem_id = problem.get('unique_id', 'unknown')
         
-        prompt = construct_prompt(problem_text)
-        results = run_inference(model_key=model_key, prompt=prompt, num_runs=num_runs)
         extracted_answers = [extract_answer(result) for result in results]
         
         # Handle None cases: filter out None values for extracted-only accuracy

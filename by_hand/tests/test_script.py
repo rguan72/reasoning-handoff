@@ -32,14 +32,15 @@ def test_evaluate_model_with_correct_answers():
         }
     ]
     
-    # Mock run_inference to return strings with correct answers
+    # Mock run_inference_batch to return strings with correct answers
+    # For 1 problem × 3 runs = 3 prompts, return 3 results
     mock_results = [
         "Step by step solution. The answer is \\boxed{4}.",
         "After calculation, we get \\boxed{4}.",
         "The result is \\boxed{4}.",
     ]
     
-    with patch('by_hand.script.run_inference', return_value=mock_results):
+    with patch('by_hand.script.run_inference_batch', return_value=mock_results):
         with patch('builtins.open', mock_open()) as mock_file:
             with patch('by_hand.script.Path.mkdir'):
                 result = evaluate_model("test_model", problems=mock_problems, num_runs=3)
@@ -62,7 +63,8 @@ def test_evaluate_model_with_mixed_answers():
         }
     ]
     
-    # Mock run_inference to return mix of correct and incorrect
+    # Mock run_inference_batch to return mix of correct and incorrect
+    # For 1 problem × 5 runs = 5 prompts, return 5 results
     mock_results = [
         "The answer is \\boxed{4}.",      # Correct
         "The answer is \\boxed{5}.",      # Incorrect
@@ -71,7 +73,7 @@ def test_evaluate_model_with_mixed_answers():
         "The answer is \\boxed{4}.",      # Correct
     ]
     
-    with patch('by_hand.script.run_inference', return_value=mock_results):
+    with patch('by_hand.script.run_inference_batch', return_value=mock_results):
         with patch('builtins.open', mock_open()) as mock_file:
             with patch('by_hand.script.Path.mkdir'):
                 result = evaluate_model("test_model", problems=mock_problems, num_runs=5)
@@ -94,7 +96,8 @@ def test_evaluate_model_with_none_extractions():
         }
     ]
     
-    # Mock run_inference to return mix with some missing boxed
+    # Mock run_inference_batch to return mix with some missing boxed
+    # For 1 problem × 5 runs = 5 prompts, return 5 results
     mock_results = [
         "The answer is \\boxed{4}.",      # Correct
         "The answer is 5.",               # No boxed - None extraction
@@ -103,7 +106,7 @@ def test_evaluate_model_with_none_extractions():
         "The answer is \\boxed{4}.",      # Correct
     ]
     
-    with patch('by_hand.script.run_inference', return_value=mock_results):
+    with patch('by_hand.script.run_inference_batch', return_value=mock_results):
         with patch('builtins.open', mock_open()) as mock_file:
             with patch('by_hand.script.Path.mkdir'):
                 result = evaluate_model("test_model", problems=mock_problems, num_runs=5)
@@ -127,14 +130,15 @@ def test_evaluate_model_with_all_none():
         }
     ]
     
-    # Mock run_inference to return strings without boxed
+    # Mock run_inference_batch to return strings without boxed
+    # For 1 problem × 3 runs = 3 prompts, return 3 results
     mock_results = [
         "The answer is 4.",
         "I think it's 5.",
         "Maybe 6?",
     ]
     
-    with patch('by_hand.script.run_inference', return_value=mock_results):
+    with patch('by_hand.script.run_inference_batch', return_value=mock_results):
         with patch('builtins.open', mock_open()) as mock_file:
             with patch('by_hand.script.Path.mkdir'):
                 result = evaluate_model("test_model", problems=mock_problems, num_runs=3)
@@ -158,12 +162,13 @@ def test_evaluate_model_saves_results():
         }
     ]
     
+    # Mock run_inference_batch - for 1 problem × 2 runs = 2 prompts, return 2 results
     mock_results = [
         "The answer is \\boxed{4}.",
         "The answer is \\boxed{5}.",
     ]
     
-    with patch('by_hand.script.run_inference', return_value=mock_results):
+    with patch('by_hand.script.run_inference_batch', return_value=mock_results):
         with patch('builtins.open', mock_open()) as mock_file:
             with patch('by_hand.script.Path.mkdir'):
                 with patch('by_hand.script.json.dump') as mock_json_dump:
@@ -192,6 +197,7 @@ def test_evaluate_model_with_different_answer_formats():
     ]
     
     # Test with various formats that should match ground_truth=4
+    # For 1 problem × 4 runs = 4 prompts, return 4 results
     mock_results = [
         "The answer is \\boxed{4}.",           # Exact match
         "The answer is \\boxed{4.0}.",         # Should match numerically
@@ -199,7 +205,7 @@ def test_evaluate_model_with_different_answer_formats():
         "The answer is \\boxed{5}.",          # Wrong answer
     ]
     
-    with patch('by_hand.script.run_inference', return_value=mock_results):
+    with patch('by_hand.script.run_inference_batch', return_value=mock_results):
         with patch('builtins.open', mock_open()) as mock_file:
             with patch('by_hand.script.Path.mkdir'):
                 result = evaluate_model("test_model", problems=mock_problems, num_runs=4)
@@ -260,16 +266,21 @@ def test_evaluate_model_with_mocked_huggingface():
     
     mock_dataset = MockDataset(mock_dataset_items)
     
-    # Mock inference results - first problem all correct, second problem all incorrect
-    def mock_run_inference_side_effect(model_key, prompt, num_runs):
-        if '2+2' in prompt:
-            return ["The answer is \\boxed{4}."] * num_runs
-        elif '3+3' in prompt:
-            return ["The answer is \\boxed{7}."] * num_runs  # Wrong answer
-        return ["The answer is \\boxed{0}."] * num_runs
+    # Mock inference results - batch inference takes a list of prompts
+    # For 2 problems × 3 runs = 6 prompts total
+    def mock_run_inference_batch_side_effect(model_key, prompts):
+        results = []
+        for prompt in prompts:
+            if '2+2' in prompt:
+                results.append("The answer is \\boxed{4}.")
+            elif '3+3' in prompt:
+                results.append("The answer is \\boxed{7}.")  # Wrong answer
+            else:
+                results.append("The answer is \\boxed{0}.")
+        return results
     
     with patch('by_hand.script.load_dataset', return_value=mock_dataset):
-        with patch('by_hand.script.run_inference', side_effect=mock_run_inference_side_effect):
+        with patch('by_hand.script.run_inference_batch', side_effect=mock_run_inference_batch_side_effect):
             with patch('builtins.open', mock_open()):
                 with patch('by_hand.script.Path.mkdir'):
                     result = evaluate_model("test_model", num_runs=3)

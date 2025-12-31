@@ -51,7 +51,7 @@ def evaluate_model(model_key: str, problems: List[Dict] = None, num_runs: int = 
     """
     # Load problems if not provided
     if problems is None:
-        problems = load_aime25_problems(limit=10)
+        problems = load_aime25_problems()
     
     # Prepare all prompts for batch inference
     # Each problem gets num_runs prompts, so we create a list of (problem_idx, prompt) tuples
@@ -349,5 +349,5 @@ if __name__ == "__main__":
         )
     else:
         # Run evaluation
-        evaluate_model("qwen8")
-        evaluate_model("deep")
+        evaluate_model("deep-llama")
+        evaluate_model("deep-qwen")
